@@ -1,8 +1,10 @@
 import logging
 
 from arq.connections import RedisSettings
+from arq.worker import func
 
 from app.core.config import get_settings
+from app.jobs.transcription import MAX_TRIES, transcribe_session
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("worker")
@@ -27,7 +29,10 @@ async def shutdown(ctx):
 
 
 class WorkerSettings:
-    functions = [dummy_job]
+    functions = [
+        dummy_job,
+        func(transcribe_session, max_tries=MAX_TRIES),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)

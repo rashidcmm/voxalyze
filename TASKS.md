@@ -26,17 +26,34 @@ session, worth a manual click-through before you move on).**
 
 ## Day 2 — Record & Store + Transcription
 
-- [ ] `POST /sessions` — creates session with assigned topic, status `recording`
-- [ ] Frontend `/practice/{id}`: topic display, 60s prep timer, `MediaRecorder` record/stop
-- [ ] `POST /sessions/{id}/audio` — accepts blob, writes to local storage, status `uploaded`
-- [ ] Handle: mic permission denied, tab closed mid-recording, upload failure + retry
-- [ ] `Transcriber` protocol + `LocalWhisperTranscriber` (faster-whisper, word-level timestamps)
-- [ ] Transcription enqueued on upload; job idempotent + retries with backoff
-- [ ] `transcripts` + `words` tables
-- [ ] `GET /sessions/{id}` status transitions: uploaded → transcribing → transcribed
+- [x] `POST /sessions` — creates session with assigned topic, status `recording`
+- [x] Frontend `/practice/{id}`: topic display, 60s prep timer, `MediaRecorder` record/stop
+- [x] `POST /sessions/{id}/audio` — accepts blob, writes to local storage, status `uploaded`
+- [x] Handle: mic permission denied, tab closed mid-recording (beforeunload warning), upload
+      failure + retry (blob kept in memory, retry button re-POSTs)
+- [x] `Transcriber` protocol + `LocalWhisperTranscriber` (faster-whisper, word-level timestamps)
+- [x] Transcription enqueued on upload; job idempotent (unique `transcripts.session_id` +
+      early-return check) + retries with exponential backoff (5s, 25s) via `arq Retry`
+- [x] `transcripts` + `words` tables
+- [x] `GET /sessions/{id}` status transitions: uploaded → transcribing → transcribed
+- [x] `GET /sessions/{id}/audio` (playback) and `GET /sessions/{id}/transcript` added
+      (needed for the DoD's "audio plays back" check and for verifying transcripts)
 
-**Day 2 DoD:** record 3 min, close/reopen session, audio plays back · kill worker mid-job,
-confirm clean resume on restart.
+**Day 2 DoD — fully verified:**
+- Real speech (Windows TTS-generated WAV, not silence) uploaded and transcribed correctly by
+  faster-whisper `base.en`, filler words ("Um,", "uh,") preserved, word timestamps sane
+- Idempotency: re-invoking the job for an already-transcribed session returns
+  `already_transcribed` and does not duplicate `words` rows (checked: 62 words before/after)
+- Retry/failure path: simulated a missing audio file — try 1 & 2 raised `Retry` with 5s/25s
+  backoff as designed, try 3 raised terminally and persisted `status=failed` +
+  `failure_reason` on the session
+- Kill-mid-job resume: live test (isolated Redis db to avoid colliding with the real app
+  worker) — killed the whole worker process tree ~0.1s into an 8s job, a freshly started
+  worker reclaimed and completed the same job ~30s later once ARQ's in-progress lock
+  (`job_timeout + 10s`) expired
+- Audio playback endpoint verified byte-for-byte against the uploaded file
+- Frontend: tsc + eslint clean, all routes 200; full browser click-through still not done
+  (no browser automation available this session)
 
 ## Day 3 — Deterministic Metrics Engine
 

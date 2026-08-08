@@ -54,6 +54,24 @@ export interface TopicResponse {
   difficulty: number;
 }
 
+export type SessionStatus =
+  | "recording"
+  | "uploaded"
+  | "transcribing"
+  | "transcribed"
+  | "scoring"
+  | "scored"
+  | "failed";
+
+export interface SessionResponse {
+  id: string;
+  status: SessionStatus;
+  topic: TopicResponse;
+  duration_s: number | null;
+  failure_reason: string | null;
+  created_at: string;
+}
+
 export const api = {
   signup: (email: string, password: string, name: string) =>
     request<TokenResponse>("/auth/signup", {
@@ -72,5 +90,46 @@ export const api = {
     if (category) params.set("category", category);
     const qs = params.toString();
     return request<TopicResponse>(`/topics/random${qs ? `?${qs}` : ""}`, {}, token);
+  },
+  createSession: (token: string, difficulty?: number, category?: string) =>
+    request<SessionResponse>(
+      "/sessions",
+      { method: "POST", body: JSON.stringify({ difficulty, category }) },
+      token
+    ),
+  getSession: (token: string, id: string) =>
+    request<SessionResponse>(`/sessions/${id}`, {}, token),
+  uploadAudio: async (
+    token: string,
+    id: string,
+    blob: Blob,
+    filename: string
+  ): Promise<{ id: string; status: SessionStatus }> => {
+    const form = new FormData();
+    form.append("file", blob, filename);
+    const res = await fetch(`${API_URL}/sessions/${id}/audio`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = body.detail ?? detail;
+      } catch {
+        // ignore
+      }
+      throw new ApiError(res.status, detail);
+    }
+    return res.json();
+  },
+  getAudioObjectUrl: async (token: string, id: string): Promise<string> => {
+    const res = await fetch(`${API_URL}/sessions/${id}/audio`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
   },
 };

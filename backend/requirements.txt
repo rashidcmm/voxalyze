@@ -14,3 +14,5 @@ python-multipart==0.0.20
 arq==0.26.3
 redis==5.2.1
 python-dotenv==1.0.1
+faster-whisper==1.1.1
+requests==2.32.3

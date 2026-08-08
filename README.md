@@ -9,7 +9,9 @@ Built against a compressed **6-day** version of `gd-trainer-roadmap-v2.md` (the 
 
 ## Stack
 
-- **Backend:** FastAPI + SQLAlchemy 2.0 (async) + Alembic, Postgres, Redis, ARQ job queue
+- **Backend:** FastAPI + SQLAlchemy 2.0 (async) + Alembic, Postgres, Redis, ARQ job queue,
+  faster-whisper (local transcription, `base.en` int8 — first run downloads the model from
+  Hugging Face, needs internet once)
 - **Frontend:** Next.js 16 (App Router, Turbopack) + TypeScript + Tailwind + Zustand
 - **Local dev infra:** Postgres + Redis via `docker-compose.yml` — no cloud accounts needed
   until Day 4 (Azure Speech, LLM API) and Day 6 (deploy)

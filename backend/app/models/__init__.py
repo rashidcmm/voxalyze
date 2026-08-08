@@ -1,4 +1,6 @@
 from app.models.user import User
 from app.models.topic import Topic
+from app.models.session import Session, SessionStatus
+from app.models.transcript import Transcript, Word
 
-__all__ = ["User", "Topic"]
+__all__ = ["User", "Topic", "Session", "SessionStatus", "Transcript", "Word"]
