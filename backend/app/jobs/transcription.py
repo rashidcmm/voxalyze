@@ -12,7 +12,9 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.core.db import async_session_maker
+from app.metrics.pipeline import compute_all_metrics
 from app.models.session import Session, SessionStatus
+from app.models.session_metrics import SessionMetrics
 from app.models.transcript import Transcript, Word
 from app.transcription import get_transcriber
 
@@ -76,6 +78,13 @@ async def transcribe_session(ctx: dict, session_id: str) -> str:
                     )
                 )
 
+            # Deterministic metrics (Phase 4) computed in the same job/transaction
+            # as the transcript — they're cheap (no ML inference beyond the parse
+            # spaCy already needs) and this keeps transcript+metrics atomic:
+            # either both land in this commit or neither does.
+            metrics_dict = compute_all_metrics(result.full_text, result.words, result.duration_s)
+            db.add(SessionMetrics(session_id=session_id, **metrics_dict))
+
             session = (
                 await db.execute(select(Session).where(Session.id == session_id))
             ).scalar_one()
@@ -84,10 +93,11 @@ async def transcribe_session(ctx: dict, session_id: str) -> str:
             await db.commit()
 
         logger.info(
-            "transcribed session %s: %d words, %.1fs audio",
+            "transcribed session %s: %d words, %.1fs audio, wpm=%.1f",
             session_id,
             len(result.words),
             result.duration_s,
+            metrics_dict["wpm_overall"],
         )
         return "ok"
 

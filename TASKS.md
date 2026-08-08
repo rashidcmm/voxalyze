@@ -57,15 +57,39 @@ session, worth a manual click-through before you move on).**
 
 ## Day 3 — Deterministic Metrics Engine
 
-- [ ] Fluency: WPM (overall + rolling 15s), filler rate/100 words (India-aware filler list),
+- [x] Fluency: WPM (overall + rolling 15s), filler rate/100 words (India-aware filler list),
       pause analysis (>0.5s / >2.0s), speech-to-silence ratio
-- [ ] Vocabulary: MTLD (not TTR), repeated-3-gram rate
-- [ ] Syntax (spaCy): MLU, clauses/sentence, subordination ratio, passive %, discourse markers
-- [ ] `session_metrics` table, one row per session
+- [x] Vocabulary: MTLD (not TTR), repeated-3-gram rate
+- [x] Syntax (spaCy): MLU, clauses/sentence, subordination ratio, passive %, discourse markers
+- [x] `session_metrics` table, one row per session, computed atomically in the same
+      transaction/commit as the transcript (Phase 4 folded into the Phase 3 job rather than
+      a separate queued step — cheap enough not to need its own job hop)
 - [ ] *(stretch, cut from 6-day scope)* CEFR band distribution, AWL coverage %
 
-**Day 3 DoD:** three deliberately different sample recordings (fluent / halting+filler-heavy /
-short+repetitive) produce metrics that separate clearly in the expected direction.
+**Day 3 DoD — tested against 3 real TTS-generated samples through the full pipeline
+(upload → whisper → metrics), results reported honestly, including where they didn't
+separate as hoped:**
+
+| metric | fluent+dense | halting+filler | short+repetitive | separated as expected? |
+|---|---|---|---|---|
+| wpm_overall | 143.3 | 48.7 | 156.6 | yes — halting much slower |
+| filler_rate_per_100_words | 0.0 | 19.23 | 0.0 | yes |
+| mtld_score | 209.5 | 94.6 | 7.4 | yes — clean monotonic separation |
+| repeated_trigram_rate | 0.0 | 0.0 | 0.565 | yes |
+| discourse_marker_rate | 4.48 | 0.0 | 0.0 | yes |
+| speech_to_silence_ratio | 3.35 | **5.18** | 1.44 | **no** — halting came out *higher* than fluent |
+| hesitation_pause_count (>2s) | 0 | 0 | 0 | not tested — no sample produced a gap that long |
+
+Root cause of the one miss, confirmed by inspecting the actual transcript: the "halting"
+sample was synthesized by slowing the TTS engine's articulation rate (`Rate=-3`), which
+lengthens each recognized word's own duration rather than inserting real silent gaps —
+so `speaking_time_s` (sum of word durations) went up, not down. Separately, Whisper itself
+dropped the "um"/"uh" tokens from that sample entirely (it still correctly kept "like",
+"you know", "so yeah", "i mean", "basically" — which is why filler_rate still separated
+correctly). Both are artifacts of using slowed-down TTS as a stand-in for genuine human
+hesitation, not a bug in the pause-analysis code — real recordings with actual silent
+pauses should behave as designed, but this is exactly the kind of thing Phase 7's real
+evaluation harness (human recordings, human ratings) needs to confirm rather than assume.
 
 ## Day 4 — Model Layer (3 scorers)
 

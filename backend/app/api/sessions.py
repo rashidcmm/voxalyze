@@ -12,10 +12,12 @@ from app.core.db import get_db
 from app.core.storage import save_upload
 from app.jobs.pool import get_arq_pool
 from app.models.session import Session, SessionStatus
+from app.models.session_metrics import SessionMetrics
 from app.models.topic import Topic
 from app.models.transcript import Transcript
 from app.models.user import User
 from app.schemas.session import AudioUploadResponse, SessionCreate, SessionResponse
+from app.schemas.session_metrics import SessionMetricsResponse
 from app.schemas.transcript import TranscriptResponse
 
 CONTENT_TYPE_BY_EXTENSION = {
@@ -165,3 +167,21 @@ async def get_transcript(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No transcript yet")
 
     return transcript
+
+
+@router.get("/{session_id}/metrics", response_model=SessionMetricsResponse)
+async def get_metrics(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    await _get_owned_session(session_id, current_user, db)
+
+    result = await db.execute(
+        select(SessionMetrics).where(SessionMetrics.session_id == session_id)
+    )
+    metrics = result.scalar_one_or_none()
+    if metrics is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No metrics yet")
+
+    return metrics
