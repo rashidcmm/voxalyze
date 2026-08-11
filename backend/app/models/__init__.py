@@ -4,6 +4,10 @@ from app.models.session import Session, SessionStatus
 from app.models.transcript import Transcript, Word
 from app.models.session_metrics import SessionMetrics
 from app.models.model_scores import ModelScores
+from app.models.room import Room, RoomMode, RoomStatus
+from app.models.room_participant import RoomParticipant
+from app.models.room_transcript_segment import RoomTranscriptSegment
+from app.models.room_report import RoomReport
 
 __all__ = [
     "User",
@@ -14,4 +18,10 @@ __all__ = [
     "Word",
     "SessionMetrics",
     "ModelScores",
+    "Room",
+    "RoomMode",
+    "RoomStatus",
+    "RoomParticipant",
+    "RoomTranscriptSegment",
+    "RoomReport",
 ]
