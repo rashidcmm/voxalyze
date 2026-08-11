@@ -28,6 +28,7 @@ scipy==1.18.0
 # Testing (Rooms MVP — first automated test suite in this repo)
 pytest==8.3.4
 pytest-asyncio==0.25.2
+httpx==0.28.1
 
 # Rooms (multi-party GD room MVP)
 livekit-api==1.2.0
