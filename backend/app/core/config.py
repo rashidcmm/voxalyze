@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-opus-5"
     embedding_model: str = "all-MiniLM-L6-v2"
 
+    # Rooms (Sub-project A: multi-party GD room MVP)
+    livekit_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
+    room_max_participants: int = 6
+
 
 @lru_cache
 def get_settings() -> Settings:
