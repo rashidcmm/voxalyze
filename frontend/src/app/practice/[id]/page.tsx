@@ -303,15 +303,23 @@ function PracticeContent() {
           </p>
           {audioUrl && <audio controls src={audioUrl} className="w-full" />}
           <p className="text-sm text-gray-500">
-            Transcription and scoring land in a later phase — for now the recording is
-            safely stored and playable.
+            Transcription, metrics and scoring run in the background — this can take up to a
+            couple of minutes for a full session.
           </p>
-          <button
-            onClick={() => router.push("/dashboard")}
-            className="rounded-md border border-black/15 px-4 py-2 text-sm dark:border-white/15"
-          >
-            Back to dashboard
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => router.push(`/sessions/${sessionId}/feedback`)}
+              className="rounded-md bg-black px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-black"
+            >
+              View feedback
+            </button>
+            <button
+              onClick={() => router.push("/dashboard")}
+              className="rounded-md border border-black/15 px-4 py-2 text-sm dark:border-white/15"
+            >
+              Back to dashboard
+            </button>
+          </div>
         </div>
       )}
     </main>

@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { useAuthStore } from "@/lib/authStore";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, ProgressResponse } from "@/lib/api";
 import { useRouter } from "next/navigation";
+import TrendChart from "@/components/charts/TrendChart";
+import RadarChart from "@/components/charts/RadarChart";
 
 function DashboardContent() {
   const user = useAuthStore((s) => s.user);
@@ -13,6 +15,23 @@ function DashboardContent() {
   const router = useRouter();
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ProgressResponse | null>(null);
+  const [progressError, setProgressError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    api
+      .getProgress(token)
+      .then((p) => !cancelled && setProgress(p))
+      .catch((err) => {
+        if (cancelled) return;
+        setProgressError(err instanceof ApiError ? err.message : "Could not load progress.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   function handleLogout() {
     logout();
@@ -61,8 +80,29 @@ function DashboardContent() {
         {error && <p className="text-sm text-red-600">{error}</p>}
       </div>
 
-      <div className="mt-8 rounded-xl border border-dashed border-black/15 p-8 text-center text-sm text-gray-500 dark:border-white/15">
-        Your progress trends across sessions will show up here once scoring is wired up.
+      <div className="mt-8 grid gap-6 lg:grid-cols-[2fr_1fr]">
+        <div className="rounded-xl border border-black/10 p-5 dark:border-white/10">
+          <h2 className="text-sm font-medium text-gray-500">Progress across sessions</h2>
+          {progressError && <p className="mt-2 text-sm text-red-600">{progressError}</p>}
+          {!progressError && progress && (
+            <div className="mt-4">
+              <TrendChart points={progress.points} />
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-black/10 p-5 dark:border-white/10">
+          <h2 className="text-sm font-medium text-gray-500">Latest session</h2>
+          {progress?.latest ? (
+            <div className="mt-4 flex flex-col items-center">
+              <RadarChart scores={progress.latest} />
+              <p className="mt-2 text-2xl font-semibold tabular-nums">{progress.latest.overall}</p>
+              <p className="text-xs text-gray-500">overall score</p>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-gray-500">Complete a session to see your radar chart.</p>
+          )}
+        </div>
       </div>
     </main>
   );

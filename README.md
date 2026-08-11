@@ -20,6 +20,8 @@ Built against a compressed **6-day** version of `gd-trainer-roadmap-v2.md` (the 
 
 - Docker Desktop running
 - Python 3.12+, Node 22+
+- For Day 4 model scorers (optional — the app runs fine without them, see below):
+  an Azure Speech key/region and an Anthropic API key
 
 ## Running locally
 
@@ -59,6 +61,31 @@ npm run dev
 
 Visit `http://localhost:3000`.
 
+## External accounts needed (Day 4+)
+
+The app works end-to-end without these — fluency/vocabulary/syntax metrics (Day 3),
+relevance scoring (local embeddings), headline scores, and the dashboard all work with
+zero cloud accounts. Two of the five headline dimensions (**Clarity**, **Argumentation**)
+just show as unscored until you add the keys below; nothing crashes.
+
+1. **Azure Speech** (pronunciation → "Clarity" dimension) — free F0 tier:
+   - Go to [portal.azure.com](https://portal.azure.com) → Create a resource → search
+     "Speech" → create it on the **Free F0** pricing tier (5 audio hours/month free, no
+     credit card charge on F0 itself, but Azure does require a card on file for the
+     subscription)
+   - Copy **Key 1** and the **Region** from the resource's "Keys and Endpoint" page
+   - Put them in `backend/.env` as `AZURE_SPEECH_KEY` / `AZURE_SPEECH_REGION`
+2. **Anthropic API** (argument-quality scorer) — pay-as-you-go, pennies per session:
+   - Go to [console.anthropic.com](https://console.anthropic.com) → Settings → API Keys →
+     Create Key
+   - Put it in `backend/.env` as `ANTHROPIC_API_KEY`
+   - Defaults to `claude-opus-5`; set `ANTHROPIC_MODEL=claude-haiku-4-5` in `.env` if you'd
+     rather trade judgment quality for a cheaper/faster scorer — this is a config change,
+     no code edit needed
+
+Restart the worker (`arq app.jobs.worker.WorkerSettings`) after adding keys — it loads them
+at process start.
+
 ## Verifying it's working (Phase 0/1 DoD)
 
 - `curl http://localhost:8000/health` → `{"status": "ok"}`
@@ -91,4 +118,12 @@ gd-trainer-roadmap-v2.md   original 4-week roadmap this build compresses
 
 ## Status
 
-Day 1 (scaffold, auth, topic bank) complete. See `TASKS.md` for what's done and what's next.
+Days 1-5 built (scaffold/auth, record+transcribe, deterministic metrics, model-layer
+scorers, headline scoring + progress/feedback UI). See `TASKS.md` for what's done, what's
+verified vs. not, and what's next (Day 6: deploy).
+
+## Evaluation harness
+
+`EVALUATION.md` + `backend/scripts/evaluate.py` — Spearman correlation between the
+pipeline's headline scores and human ratings, plus LLM-scorer variance. Needs real
+recordings and ratings to run; see `EVALUATION.md` for the collection steps.

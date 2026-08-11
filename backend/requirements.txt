@@ -17,3 +17,10 @@ python-dotenv==1.0.1
 faster-whisper==1.1.1
 requests==2.32.3
 spacy==3.8.2
+
+# Model layer (Day 4+)
+anthropic==0.121.0
+sentence-transformers==3.3.1
+av==18.0.0
+numpy==2.5.1
+scipy==1.18.0

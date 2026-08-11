@@ -92,6 +92,14 @@ async def transcribe_session(ctx: dict, session_id: str) -> str:
             session.duration_s = result.duration_s
             await db.commit()
 
+        # Chain straight into Day 4 scoring — same job_id-pinning trick as the
+        # upload->transcribe enqueue, so a retried transcription doesn't fan
+        # out duplicate scoring jobs either.
+        from app.jobs.pool import get_arq_pool
+
+        pool = await get_arq_pool()
+        await pool.enqueue_job("score_session", session_id, _job_id=f"score:{session_id}")
+
         logger.info(
             "transcribed session %s: %d words, %.1fs audio, wpm=%.1f",
             session_id,

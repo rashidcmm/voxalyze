@@ -93,27 +93,52 @@ evaluation harness (human recordings, human ratings) needs to confirm rather tha
 
 ## Day 4 — Model Layer (3 scorers)
 
-- [ ] Azure pronunciation assessment: accuracy/fluency/prosody + word-level error types,
+- [x] Azure pronunciation assessment: accuracy/fluency/prosody + word-level error types,
       cached per session, framed as clarity/intelligibility (not "wrong accent")
-- [ ] Topic relevance: utterance-level embeddings (all-MiniLM-L6-v2) vs topic statement,
-      cosine similarity → mean relevance + drift curve over time
-- [ ] Argument quality (LLM, Anthropic API): strict JSON schema, `temperature=0`,
-      Pydantic validation, retry once on schema failure
+      (`app/scoring/pronunciation.py` — REST API, chunked to ~45s pieces for the
+      short-audio endpoint's limit, duration-weighted aggregation)
+- [x] Topic relevance: utterance-level embeddings (all-MiniLM-L6-v2) vs topic statement,
+      cosine similarity → mean relevance + drift curve over time (`app/scoring/relevance.py`,
+      local, no API key — verified end-to-end against a real synthetic transcript)
+- [x] Argument quality (LLM, Anthropic API): strict JSON schema via `client.messages.parse`,
+      Pydantic validation, retry once on schema failure (`app/scoring/argument_quality.py`).
+      Uses `claude-opus-5`; `temperature=0` isn't accepted by that model (see module
+      docstring) — `effort: "low"` used instead for near-deterministic output, per current
+      Anthropic API guidance.
+- [x] `model_scores` table (migration `85cb62ba58af`), `score_session` ARQ job chained after
+      transcription, `GET /sessions/{id}/scores` — each of the 3 scorers independently
+      isolated (`app/scoring/pipeline.py`): a missing API key or a scorer crash never blocks
+      the other two or fails the whole job, recorded as `status=not_configured`/`error`
+      per-scorer rather than silently zeroed
 
-**Day 4 DoD:** each scorer runs standalone on a sample file and returns a validated result ·
-full pipeline (upload → transcript → metrics → 3 scorers → stored) completes < 90s.
+**Day 4 DoD — partially verified this session:**
+- Each scorer runs standalone: relevance verified end-to-end (real embedding download +
+  cosine similarity separation on a synthetic transcript); pronunciation's audio
+  decode/re-encode path verified against a synthetic WAV; both API-dependent scorers
+  (pronunciation, argument quality) verified to fail gracefully with `not_configured`
+  when their keys aren't set (they aren't, yet — see README "External accounts needed")
+- App + worker import cleanly with all jobs/routes registered; not yet run against a live
+  Postgres/Redis in this session (Docker Desktop wasn't running) — full pipeline timing
+  (<90s) and the actual Azure/Anthropic-configured path are untested until you add those
+  keys and run it for real
 
 ## Day 5 — Scoring & Learning Curve + Mini Evaluation Harness
 
-- [ ] Combine into headline dimensions (Fluency, Vocabulary, Clarity, Relevance, Argumentation)
-      with documented weights, normalized for topic difficulty
-- [ ] EWMA-smoothed trend line; `GET /me/progress`; multi-line + radar chart
-- [ ] Feedback page: headline scores, relevance drift curve, top filler words, LLM improvement
-      points, transcript with slow/hesitant segments highlighted
-- [ ] Mini evaluation harness: 6–8 recordings, self (+1 rater if available), Spearman
-      correlation per dimension, `EVALUATION.md` with honest results incl. sample-size caveat
+- [x] Combine into headline dimensions (Fluency, Vocabulary, Clarity, Relevance, Argumentation)
+      with documented weights, normalized for topic difficulty (`app/scoring/headline.py` —
+      weights and normalization curves are hand-picked defaults, explicitly flagged as a
+      Phase 7 calibration target, not fit against data)
+- [x] EWMA-smoothed trend line; `GET /me/progress`; multi-line + radar chart (hand-rolled
+      SVG, no new frontend dependency — `src/components/charts/`)
+- [x] Feedback page: headline scores, relevance drift curve, top filler words, LLM improvement
+      points, transcript with slow/hesitant segments highlighted (`/sessions/{id}/feedback`)
+- [x] Mini evaluation harness built (`scripts/evaluate.py`: Spearman correlation + LLM
+      variance) and `EVALUATION.md` written — **not yet run against real data**: this needs
+      actual recordings and human ratings, which only you can produce (see EVALUATION.md)
 
-**Day 5 DoD:** after 5 sessions, dashboard trends are interpretable in 10s without explanation.
+**Day 5 DoD:** unverified against real sessions — needs Docker Desktop running + at least a
+few real recordings scored end to end. tsc/eslint clean, backend imports clean, headline
+scoring logic verified with synthetic inputs.
 
 ## Day 6 — Deploy & Package (flexes to local-demo if only 5 days available)
 

@@ -3,6 +3,19 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* Headline-dimension chart colors — categorical palette slots 1-5, fixed
+     order (see src/lib/dimensions.ts). Referenced via var(--dim-*) from SVG
+     chart components since Tailwind can't statically pick up dynamically
+     constructed arbitrary-value classes. */
+  --dim-fluency: #2a78d6;
+  --dim-vocabulary: #eb6834;
+  --dim-clarity: #1baf7a;
+  --dim-relevance: #eda100;
+  --dim-argumentation: #e87ba4;
+  --chart-grid: #e1e0d9;
+  --chart-axis: #c3c2b7;
+  --chart-muted: #898781;
 }
 
 @theme inline {
@@ -16,6 +29,15 @@
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    --dim-fluency: #3987e5;
+    --dim-vocabulary: #d95926;
+    --dim-clarity: #199e70;
+    --dim-relevance: #c98500;
+    --dim-argumentation: #d55181;
+    --chart-grid: #2c2c2a;
+    --chart-axis: #383835;
+    --chart-muted: #898781;
   }
 }
 

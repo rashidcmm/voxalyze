@@ -11,6 +11,8 @@ from app.api.deps import get_current_user
 from app.core.db import get_db
 from app.core.storage import save_upload
 from app.jobs.pool import get_arq_pool
+from app.metrics.fluency import find_pauses, top_filler_words
+from app.models.model_scores import ModelScores
 from app.models.session import Session, SessionStatus
 from app.models.session_metrics import SessionMetrics
 from app.models.topic import Topic
@@ -18,7 +20,10 @@ from app.models.transcript import Transcript
 from app.models.user import User
 from app.schemas.session import AudioUploadResponse, SessionCreate, SessionResponse
 from app.schemas.session_metrics import SessionMetricsResponse
+from app.schemas.model_scores import ModelScoresResponse
+from app.schemas.feedback import FeedbackResponse
 from app.schemas.transcript import TranscriptResponse
+from app.scoring.headline import compute_headline_scores
 
 CONTENT_TYPE_BY_EXTENSION = {
     "webm": "audio/webm",
@@ -96,7 +101,8 @@ async def upload_audio(
 ):
     session = await _get_owned_session(session_id, current_user, db)
 
-    extension = ALLOWED_AUDIO_TYPES.get(file.content_type)
+    base_content_type = file.content_type.split(";")[0].strip() if file.content_type else ""
+    extension = ALLOWED_AUDIO_TYPES.get(base_content_type)
     if extension is None:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -185,3 +191,90 @@ async def get_metrics(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No metrics yet")
 
     return metrics
+
+
+@router.get("/{session_id}/scores", response_model=ModelScoresResponse)
+async def get_scores(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    await _get_owned_session(session_id, current_user, db)
+
+    result = await db.execute(select(ModelScores).where(ModelScores.session_id == session_id))
+    scores = result.scalar_one_or_none()
+    if scores is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No scores yet")
+
+    return scores
+
+
+# Rolling-window WPM below this is flagged as a "slow" segment for the
+# feedback page's transcript highlighting — well below the 110-170 target
+# band app/scoring/headline.py scores fluency against, not a hard boundary.
+SLOW_WPM_THRESHOLD = 90.0
+
+
+@router.get("/{session_id}/feedback", response_model=FeedbackResponse)
+async def get_feedback(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    session = await _get_owned_session(session_id, current_user, db)
+
+    transcript = (
+        await db.execute(
+            select(Transcript)
+            .options(selectinload(Transcript.words))
+            .where(Transcript.session_id == session_id)
+        )
+    ).scalar_one_or_none()
+    if transcript is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No transcript yet")
+
+    metrics = (
+        await db.execute(select(SessionMetrics).where(SessionMetrics.session_id == session_id))
+    ).scalar_one_or_none()
+    if metrics is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No metrics yet")
+
+    scores = (
+        await db.execute(select(ModelScores).where(ModelScores.session_id == session_id))
+    ).scalar_one_or_none()
+
+    headline = compute_headline_scores(
+        metrics=metrics,
+        pronunciation=scores.pronunciation_result if scores else None,
+        relevance=scores.relevance_result if scores else None,
+        argument=scores.argument_result if scores else None,
+        topic_difficulty=session.topic.difficulty,
+    )
+
+    words = transcript.words
+    argument = scores.argument_result if scores else None
+    relevance = scores.relevance_result if scores else None
+    pronunciation = scores.pronunciation_result if scores else None
+
+    return FeedbackResponse(
+        session_id=session.id,
+        created_at=session.created_at,
+        topic_text=session.topic.text,
+        topic_category=session.topic.category,
+        topic_difficulty=session.topic.difficulty,
+        duration_s=session.duration_s,
+        headline=headline,
+        full_text=transcript.full_text,
+        transcript_words=[{"word": w.word, "start_s": w.start_s, "end_s": w.end_s} for w in words],
+        pauses=find_pauses(words),
+        slow_segments=[
+            {"start_s": w["start_s"], "end_s": w["end_s"], "wpm": w["wpm"]}
+            for w in metrics.wpm_rolling_windows
+            if w["wpm"] < SLOW_WPM_THRESHOLD
+        ],
+        top_filler_words=top_filler_words(words),
+        relevance_drift_curve=relevance["drift_curve"] if relevance else None,
+        improvement_points=argument["improvement_points"] if argument else None,
+        argument_rationale=argument["rationale"] if argument else None,
+        pronunciation_words_needing_attention=pronunciation["words_needing_attention"] if pronunciation else None,
+    )

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.db import Base  # noqa: E402
-from app.models import User, Topic, Session, Transcript, Word, SessionMetrics  # noqa: E402,F401  (import so they register on Base.metadata)
+from app.models import User, Topic, Session, Transcript, Word, SessionMetrics, ModelScores  # noqa: E402,F401  (import so they register on Base.metadata)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

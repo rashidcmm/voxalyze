@@ -72,6 +72,92 @@ export interface SessionResponse {
   created_at: string;
 }
 
+// --- Day 5: scoring & progress ---
+
+export interface HeadlineScores {
+  fluency: number;
+  vocabulary: number;
+  clarity: number | null;
+  relevance: number | null;
+  argumentation: number | null;
+  overall: number;
+}
+
+export interface ProgressPoint extends HeadlineScores {
+  session_id: string;
+  created_at: string;
+  topic_difficulty: number;
+  topic_category: string;
+  fluency_ewma: number;
+  vocabulary_ewma: number;
+  clarity_ewma: number | null;
+  relevance_ewma: number | null;
+  argumentation_ewma: number | null;
+  overall_ewma: number;
+}
+
+export interface ProgressResponse {
+  points: ProgressPoint[];
+  latest: ProgressPoint | null;
+}
+
+export interface RelevanceUtterance {
+  text: string;
+  start_s: number;
+  end_s: number;
+  similarity: number;
+}
+
+export interface PauseSpan {
+  start_s: number;
+  end_s: number;
+  duration_s: number;
+  is_hesitation: boolean;
+}
+
+export interface SlowSegment {
+  start_s: number;
+  end_s: number;
+  wpm: number;
+}
+
+export interface TranscriptWord {
+  word: string;
+  start_s: number;
+  end_s: number;
+}
+
+export interface FillerWordCount {
+  word: string;
+  count: number;
+}
+
+export interface WordIssue {
+  word: string;
+  offset_s: number;
+  error_type: string;
+  accuracy_score: number | null;
+}
+
+export interface FeedbackResponse {
+  session_id: string;
+  created_at: string;
+  topic_text: string;
+  topic_category: string;
+  topic_difficulty: number;
+  duration_s: number | null;
+  headline: HeadlineScores;
+  full_text: string;
+  transcript_words: TranscriptWord[];
+  pauses: PauseSpan[];
+  slow_segments: SlowSegment[];
+  top_filler_words: FillerWordCount[];
+  relevance_drift_curve: RelevanceUtterance[] | null;
+  improvement_points: string[] | null;
+  argument_rationale: string | null;
+  pronunciation_words_needing_attention: WordIssue[] | null;
+}
+
 export const api = {
   signup: (email: string, password: string, name: string) =>
     request<TokenResponse>("/auth/signup", {
@@ -124,6 +210,9 @@ export const api = {
     }
     return res.json();
   },
+  getFeedback: (token: string, id: string) =>
+    request<FeedbackResponse>(`/sessions/${id}/feedback`, {}, token),
+  getProgress: (token: string) => request<ProgressResponse>("/me/progress", {}, token),
   getAudioObjectUrl: async (token: string, id: string): Promise<string> => {
     const res = await fetch(`${API_URL}/sessions/${id}/audio`, {
       headers: { Authorization: `Bearer ${token}` },

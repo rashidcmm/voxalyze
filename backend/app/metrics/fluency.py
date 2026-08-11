@@ -49,6 +49,48 @@ class FluencyMetrics:
     speech_to_silence_ratio: float = 0.0
 
 
+def top_filler_words(words: Sequence[WordLike], n: int = 3) -> list[dict]:
+    """Per-filler-phrase counts, most-frequent first — used by the Day 5
+    feedback page ("top filler words with counts"). Reuses the same filler
+    lists as compute_fluency_metrics so the two never disagree on what counts
+    as a filler.
+    """
+    from collections import Counter
+
+    normalized = [_normalize(w.word) for w in words]
+    counts: Counter = Counter()
+    for tok in normalized:
+        if tok in SINGLE_WORD_FILLERS:
+            counts[tok] += 1
+    for a, b in MULTI_WORD_FILLERS:
+        for i in range(len(normalized) - 1):
+            if normalized[i] == a and normalized[i + 1] == b:
+                counts[f"{a} {b}"] += 1
+
+    return [{"word": word, "count": count} for word, count in counts.most_common(n)]
+
+
+def find_pauses(words: Sequence[WordLike]) -> list[dict]:
+    """Individual pause locations (gap >= NATURAL_PAUSE_S between consecutive
+    words) — compute_fluency_metrics only keeps aggregate counts/durations;
+    the Day 5 feedback page needs actual positions to highlight the
+    transcript, so this walks the same word list and returns them.
+    """
+    pauses: list[dict] = []
+    for prev, nxt in zip(words, words[1:]):
+        gap = nxt.start_s - prev.end_s
+        if gap >= NATURAL_PAUSE_S:
+            pauses.append(
+                {
+                    "start_s": round(prev.end_s, 2),
+                    "end_s": round(nxt.start_s, 2),
+                    "duration_s": round(gap, 2),
+                    "is_hesitation": gap >= HESITATION_PAUSE_S,
+                }
+            )
+    return pauses
+
+
 def compute_fluency_metrics(words: Sequence[WordLike], duration_s: float) -> FluencyMetrics:
     word_count = len(words)
     if word_count == 0 or duration_s <= 0:

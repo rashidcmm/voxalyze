@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, health, sessions, topics
+from app.api import auth, health, progress, sessions, topics
 
 app = FastAPI(title="GD/Debate Speech Trainer API")
 
@@ -17,3 +17,4 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(topics.router)
 app.include_router(sessions.router)
+app.include_router(progress.router)

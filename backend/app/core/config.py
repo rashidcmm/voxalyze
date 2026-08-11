@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     azure_speech_key: str = ""
     azure_speech_region: str = ""
     anthropic_api_key: str = ""
+    # claude-opus-5 by default; override to a cheaper model (e.g. claude-haiku-4-5) if
+    # per-session LLM cost matters more than judgment quality for argument scoring.
+    anthropic_model: str = "claude-opus-5"
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 @lru_cache
