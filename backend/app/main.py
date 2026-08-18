@@ -1,9 +1,24 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, health, progress, sessions, topics
+from app.core.config import DEFAULT_JWT_SECRET, get_settings
 
-app = FastAPI(title="GD/Debate Speech Trainer API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    if settings.env != "dev" and settings.jwt_secret == DEFAULT_JWT_SECRET:
+        raise RuntimeError(
+            "JWT_SECRET is still the default placeholder. Set a real secret in your "
+            "environment before running with ENV != dev."
+        )
+    yield
+
+
+app = FastAPI(title="GD/Debate Speech Trainer API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

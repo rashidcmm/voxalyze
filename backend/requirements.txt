@@ -24,3 +24,8 @@ sentence-transformers==3.3.1
 av==18.0.0
 numpy==2.5.1
 scipy==1.18.0
+
+# Testing (first automated test suite on master)
+pytest==8.3.4
+pytest-asyncio==0.25.2
+httpx==0.28.1

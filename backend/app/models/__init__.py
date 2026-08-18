@@ -4,6 +4,7 @@ from app.models.session import Session, SessionStatus
 from app.models.transcript import Transcript, Word
 from app.models.session_metrics import SessionMetrics
 from app.models.model_scores import ModelScores
+from app.models.email_token import EmailToken, EmailTokenPurpose
 
 __all__ = [
     "User",
@@ -14,4 +15,6 @@ __all__ = [
     "Word",
     "SessionMetrics",
     "ModelScores",
+    "EmailToken",
+    "EmailTokenPurpose",
 ]
