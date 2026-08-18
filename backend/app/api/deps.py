@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -21,8 +22,13 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    subject = decode_access_token(token)
-    if subject is None:
+    payload = decode_access_token(token)
+    if payload is None:
+        raise credentials_exception
+
+    subject = payload.get("sub")
+    issued_at = payload.get("iat")
+    if subject is None or issued_at is None:
         raise credentials_exception
 
     try:
@@ -34,4 +40,10 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise credentials_exception
+
+    if user.password_changed_at is not None:
+        token_issued_at = datetime.fromtimestamp(issued_at, tz=timezone.utc)
+        if token_issued_at < user.password_changed_at:
+            raise credentials_exception
+
     return user

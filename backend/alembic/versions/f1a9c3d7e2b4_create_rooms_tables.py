@@ -1,7 +1,7 @@
 """create rooms tables
 
 Revision ID: f1a9c3d7e2b4
-Revises: 85cb62ba58af
+Revises: a1e5f0c9b3d7
 Create Date: 2026-08-11 09:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'f1a9c3d7e2b4'
-down_revision: Union[str, None] = '85cb62ba58af'
+down_revision: Union[str, None] = 'a1e5f0c9b3d7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

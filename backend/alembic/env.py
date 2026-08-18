@@ -14,6 +14,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core.db import Base  # noqa: E402
 from app.models import (  # noqa: E402,F401  (import so they register on Base.metadata)
     User, Topic, Session, Transcript, Word, SessionMetrics, ModelScores,
+    EmailToken,
     Room, RoomParticipant, RoomTranscriptSegment, RoomReport,
 )
 

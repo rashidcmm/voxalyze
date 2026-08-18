@@ -5,23 +5,26 @@ production — this project uses Postgres-specific types like UUID, not
 sqlite). Each test is wrapped in an outer transaction that's rolled back
 afterward via a SAVEPOINT (join_transaction_mode="create_savepoint"), so
 tests never see each other's data even though the application code under
-test calls session.commit() normally — see Task 10 for how ARQ job tests
-reuse db_session_maker to share that same per-test transaction.
+test calls session.commit() normally — ARQ job tests reuse db_session_maker
+to share that same per-test transaction.
 """
 import os
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 import app.models  # noqa: F401 — registers every model on Base.metadata
+from app.core.config import get_settings
 from app.core.db import Base, get_db
 from app.main import app as fastapi_app
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+asyncpg://gdtrainer:gdtrainer@localhost:5432/gdtrainer_test"
 )
+TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
 # NullPool: pytest-asyncio gives the session-scoped _schema fixture and each
 # test's function-scoped fixtures separate event loops by default (no
 # asyncio_default_fixture_loop_scope override). asyncpg connections are bound
@@ -31,6 +34,18 @@ TEST_DATABASE_URL = os.environ.get(
 # fresh physical connection on every checkout instead of reusing one across
 # loops.
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _test_redis(monkeypatch):
+    monkeypatch.setenv("REDIS_URL", TEST_REDIS_URL)
+    get_settings.cache_clear()
+    redis = Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+    await redis.flushdb()
+    yield
+    await redis.flushdb()
+    await redis.aclose()
+    get_settings.cache_clear()
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)

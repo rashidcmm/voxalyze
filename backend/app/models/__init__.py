@@ -4,6 +4,7 @@ from app.models.session import Session, SessionStatus
 from app.models.transcript import Transcript, Word
 from app.models.session_metrics import SessionMetrics
 from app.models.model_scores import ModelScores
+from app.models.email_token import EmailToken, EmailTokenPurpose
 from app.models.room import Room, RoomMode, RoomStatus
 from app.models.room_participant import RoomParticipant
 from app.models.room_transcript_segment import RoomTranscriptSegment
@@ -18,6 +19,8 @@ __all__ = [
     "Word",
     "SessionMetrics",
     "ModelScores",
+    "EmailToken",
+    "EmailTokenPurpose",
     "Room",
     "RoomMode",
     "RoomStatus",

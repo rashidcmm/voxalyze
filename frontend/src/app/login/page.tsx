@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/lib/authStore";
-import { ApiError } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -14,15 +14,34 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [resendMessage, setResendMessage] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setNeedsVerification(false);
+    setResendMessage(null);
     try {
       await login(email, password);
       router.push("/dashboard");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
+      if (err instanceof ApiError && err.status === 403) {
+        setNeedsVerification(true);
+        setError(err.message);
+      } else {
+        setError(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
+      }
+    }
+  }
+
+  async function handleResend() {
+    setResendMessage(null);
+    try {
+      const res = await api.resendVerification(email);
+      setResendMessage(res.message);
+    } catch (err) {
+      setResendMessage(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
     }
   }
 
@@ -60,9 +79,20 @@ export default function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             className="w-full rounded-md border border-black/15 bg-transparent px-3 py-2 text-sm outline-none focus:border-black/40 dark:border-white/15 dark:focus:border-white/40"
           />
+          <p className="text-right text-xs">
+            <Link href="/forgot-password" className="text-gray-500 underline">
+              Forgot password?
+            </Link>
+          </p>
         </div>
 
         {error && <p className="text-sm text-red-600">{error}</p>}
+        {needsVerification && (
+          <button type="button" onClick={handleResend} className="text-sm text-gray-500 underline">
+            Resend verification email
+          </button>
+        )}
+        {resendMessage && <p className="text-sm text-gray-500">{resendMessage}</p>}
 
         <button
           type="submit"

@@ -1,13 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/lib/authStore";
 import { ApiError } from "@/lib/api";
 
 export default function SignupPage() {
-  const router = useRouter();
   const signup = useAuthStore((s) => s.signup);
   const isLoading = useAuthStore((s) => s.isLoading);
 
@@ -15,16 +13,34 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     try {
       await signup(email, password, name);
-      router.push("/dashboard");
+      setSubmitted(true);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
     }
+  }
+
+  if (submitted) {
+    return (
+      <main className="flex flex-1 items-center justify-center p-6">
+        <div className="w-full max-w-sm space-y-4 rounded-xl border border-black/10 p-6 text-center dark:border-white/10">
+          <h1 className="text-xl font-semibold">Check your email</h1>
+          <p className="text-sm text-gray-500">
+            We sent a verification link to {email}. Verify your email, then{" "}
+            <Link href="/login" className="underline">
+              log in
+            </Link>
+            .
+          </p>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -72,6 +88,7 @@ export default function SignupPage() {
             type="password"
             required
             minLength={8}
+            maxLength={72}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className="w-full rounded-md border border-black/15 bg-transparent px-3 py-2 text-sm outline-none focus:border-black/40 dark:border-white/15 dark:focus:border-white/40"

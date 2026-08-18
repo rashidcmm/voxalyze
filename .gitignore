@@ -24,5 +24,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Git worktrees (isolated workspaces for plan execution — nested .git dirs,
+# never committed as regular files)
+.claude/worktrees/
+
 # Logs
 *.log
