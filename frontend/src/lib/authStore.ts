@@ -24,9 +24,7 @@ export const useAuthStore = create<AuthState>()(
       signup: async (email, password, name) => {
         set({ isLoading: true, error: null });
         try {
-          const { access_token } = await api.signup(email, password, name);
-          set({ token: access_token });
-          await get().hydrateUser();
+          await api.signup(email, password, name);
         } catch (e) {
           set({ error: e instanceof Error ? e.message : "Signup failed" });
           throw e;

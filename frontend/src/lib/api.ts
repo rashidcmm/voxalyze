@@ -158,9 +158,13 @@ export interface FeedbackResponse {
   pronunciation_words_needing_attention: WordIssue[] | null;
 }
 
+export interface MessageResponse {
+  message: string;
+}
+
 export const api = {
   signup: (email: string, password: string, name: string) =>
-    request<TokenResponse>("/auth/signup", {
+    request<MessageResponse>("/auth/signup", {
       method: "POST",
       body: JSON.stringify({ email, password, name }),
     }),
@@ -170,6 +174,26 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
   me: (token: string) => request<UserResponse>("/auth/me", {}, token),
+  verifyEmail: (token: string) =>
+    request<MessageResponse>("/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+  resendVerification: (email: string) =>
+    request<MessageResponse>("/auth/resend-verification", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  forgotPassword: (email: string) =>
+    request<MessageResponse>("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  resetPassword: (token: string, newPassword: string) =>
+    request<MessageResponse>("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password: newPassword }),
+    }),
   randomTopic: (token: string, difficulty?: number, category?: string) => {
     const params = new URLSearchParams();
     if (difficulty) params.set("difficulty", String(difficulty));
