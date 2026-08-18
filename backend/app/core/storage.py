@@ -18,3 +18,9 @@ async def save_upload(session_id: str, extension: str, data: bytes) -> Path:
     path = session_audio_path(session_id, extension)
     path.write_bytes(data)
     return path
+
+
+def room_participant_audio_path(room_id: str, participant_id: str) -> Path:
+    base = Path(settings.storage_dir) / "rooms" / room_id
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"{participant_id}.wav"
