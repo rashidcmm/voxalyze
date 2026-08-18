@@ -1,7 +1,19 @@
 # Multi-Party GD Room MVP — Design
 
 **Status:** Approved for planning
-**Date:** 2026-08-11
+**Date:** 2026-08-11 (analytics/access/consent scope extended 2026-08-19)
+
+> **2026-08-19 update:** a separate session (working without visibility into
+> this repo) produced three standalone docs proposing a rebuilt-from-scratch
+> platform (`docs/superpowers/plans/GD_Analytics_Architecture.md`,
+> `Implementation_Checklist.md`, `Analytics_Algorithms_Reference.md`). Their
+> useful content — the differentiator-analytics scope (topic alignment,
+> speech quality, sentiment, composite competency scores) — has been folded
+> into this spec below (see "Post-session analytics scope"). Their
+> architecture choices (separate repos, Deepgram, OpenAI embeddings,
+> MongoDB, rebuilding auth) were rejected as duplicating or contradicting
+> what's already built/decided in this repo; those three docs are now marked
+> superseded and point back here.
 
 ## Background
 
@@ -50,8 +62,10 @@ matter more than the concept.
   a room works equally for an interviewer-led session or self-conducted peer
   practice — the host role exists but doesn't have to be actively used.
 - After the session ends, all participants get a post-session report: deterministic
-  interaction metrics per participant, plus a neutral, evidence-tied LLM read on
-  each participant's contribution (framed as observations, not personality labels).
+  interaction metrics per participant, speech-quality/topic-alignment/pronunciation
+  scoring and composite competency scores (see "Post-session analytics scope"),
+  plus a neutral, evidence-tied LLM read on each participant's contribution (framed
+  as observations, not personality labels).
 
 ## Non-goals (this spec)
 
@@ -168,6 +182,46 @@ GET    /rooms                    list rooms the user hosted/joined (dashboard)
   off in the UI, not just hidden); audio publishes normally (voice unmasked, per
   Non-goals).
 
+## Session access
+
+No scheduling/matchmaking system — sourcing participants is manual (a
+WhatsApp/Discord group, a classroom) and out of scope. The existing
+`join_code` (8-char, unambiguous alphabet, already in the Data model) is the
+whole mechanism: the host shares a join link (`{frontend_base_url}/rooms/
+join/{join_code}`) plus, on the room's waiting screen, a QR code encoding
+that same link for in-person sharing (read aloud or scanned — no new
+backend endpoint, purely a frontend render of the existing join URL).
+
+## Consent & retention
+
+- **Consent:** before a participant's audio/video track is published (i.e.
+  before the LiveKit `join_room` call resolves into an actual publish),
+  the client shows an explicit opt-in modal — "This session will be
+  recorded (audio only) for analysis. Continue?" — with Join/Decline. A
+  decline does not join the room. This is a frontend gate; no new backend
+  state beyond what `room_participants.joined_at` already implies (a join
+  row only exists once consent was given).
+- **Retention:** raw audio (`room_participants.audio_path`, i.e.
+  `room_audio_tracks`) is auto-deleted 30 days after `rooms.ended_at`.
+  Transcripts (`room_transcript_segments`) and reports (`room_reports`) are
+  retained indefinitely for the participant's own progress tracking,
+  matching how the existing solo-session transcripts/scores already behave
+  — only the raw recording gets a retention window. Deletion is a scheduled
+  ARQ job (daily sweep), not covered further here — implementation detail
+  for the analytics-extension plan.
+- Video is still never recorded (existing Non-goal) — nothing to retain or
+  delete there.
+
+## Cost note
+
+At ~100 users / MVP scale (Dec 2026 interview season), the chosen free
+tiers are enough to ship without paying for anything: LiveKit Cloud's Build
+tier (5,000 WebRTC minutes/month, 50GB egress) comfortably covers this
+volume, and Azure Speech's free tier covers streaming STT + pronunciation
+scoring at the same scale. Revisit only if usage grows well past this —
+self-hosting LiveKit only starts paying off past roughly 150 concurrent
+sessions.
+
 ## Live analytics (host-only, during the session)
 
 Computed from per-track VAD + STT timestamps:
@@ -199,6 +253,50 @@ Computed from per-track VAD + STT timestamps:
    references") — explicitly guarded against personality-trait labels (no
    "arrogant," "rude," etc.) since those are subjective, potentially biased claims
    about a real person, especially in an interview-evaluation context.
+
+## Post-session analytics scope (extension)
+
+This is the actual differentiator vs. a plain video call, and the reason a
+participant would want a report beyond talk-time/interruptions. All of it
+reuses existing solo-trainer modules, run per participant per room instead
+of once per solo session — no new ASR/embedding/LLM providers needed:
+
+- **Topic alignment** — score each participant's transcript segments
+  against the room's discussion topic. Reuses `app/scoring/relevance.py`
+  (local `sentence-transformers`, already used for the solo trainer's
+  topic-relevance score) unchanged in method, just applied per participant
+  instead of per solo session.
+- **Pronunciation** — reuses `app/scoring/pronunciation.py` (Azure Speech,
+  already configured) per participant's audio.
+- **Speech quality (vocabulary, grammar, filler words, fluency)** — reuses
+  `app/metrics/vocabulary.py`, `syntax.py`, `fluency.py`, `text_utils.py`
+  per participant's transcript. (Note for the implementation plan: verify
+  the existing filler-word matching handles multi-word phrases like "you
+  know" correctly against however transcripts are tokenized here — this
+  was found to be silently broken in the external draft docs' version and
+  is worth a direct unit-test check before trusting it in this context.)
+- **Sentiment / agreement-disagreement** — net new, lightweight: a small
+  marker-phrase heuristic ("I agree" / "I disagree" / "however" / "on the
+  other hand" etc.) per segment, in the same spirit as the deterministic
+  `live_stats.py` heuristics — not a new ML model. An LLM-based version is
+  out of scope for MVP; the existing qualitative LLM pass can already
+  surface agreement/disagreement in prose if useful.
+- **Composite competency scores** — per participant, combine the above plus
+  the existing deterministic stats (talk-time, turns, interruptions,
+  dominance) into simple weighted 0-100 scores: Leadership, Engagement,
+  Listening, Communication Clarity, Topic Alignment, Confidence, Teamwork.
+  Pure arithmetic over already-computed numbers (no new external calls) —
+  the exact weights are an implementation-plan detail, not a design
+  decision that needs to be locked here.
+
+All of the above are deterministic/local-model outputs and follow the same
+graceful-degradation rule as the rest of this spec: if a given scorer isn't
+configured or fails for one participant, that participant's report shows
+that section as `not_configured`/`error` without blocking the rest of the
+report (same `app/scoring/pipeline.py` isolation pattern already used).
+
+This is new implementation scope beyond Plan 1/2 (backend/frontend for the
+room itself) — see "Deferred (future specs)" for how it's sequenced.
 
 ## Error handling
 
@@ -235,10 +333,32 @@ Extends the existing evaluation harness pattern (`EVALUATION.md`,
 
 ## Deferred (future specs)
 
+Sequencing, nearest first:
+
+1. **This spec (Plan 1: backend, Plan 2: frontend)** — the room itself:
+   join/live call/talk-time-interruption-dominance stats/LLM qualitative
+   pass.
+2. **Post-session analytics extension** (scoped above, not yet planned
+   task-by-task) — topic alignment, pronunciation, speech quality,
+   sentiment, composite scores. Next spec-to-plan once 1 is implemented and
+   manually verified.
+3. **Phase 2: engagement/proctoring** — webcam eye-contact/engagement
+   signals and basic self-run-mock-interview proctoring (tab-switch,
+   fullscreen enforcement). Client-side only, aggregate metrics sent to the
+   backend — never raw frames or stored video, consistent with this spec's
+   video non-goal above. Gets its own brainstorming pass once 1-2 are real;
+   not scoped further here deliberately (see "Why this needs its own spec").
+
+Also deferred, unscoped (backlog, not yet worth a spec):
+
 - Voice-masking for anonymous mode.
 - Video recording/playback of sessions.
 - Interviewer-facilitation tooling (structured scoring UI, flags, scheduling).
-- Phase 2: proctoring/anti-cheat for self-run mock interviews (gaze tracking,
-  tab/fullscreen enforcement, keystroke analytics — HackerRank-style).
 - Rooms larger than ~6 participants (would need an SFU-aware redesign of the
   live-stats fan-out).
+- Post-MVP product ideas carried over from the 2026-08-19 external draft
+  docs, worth revisiting once 1-3 above are real: AI-generated coaching
+  notes (extends the existing LLM qualitative pass), gamification
+  (streaks/badges/leaderboards), benchmark comparisons against past
+  sessions, a structured mock-interview mode (preset topics + timed
+  phases), and exportable/shareable PDF reports.
