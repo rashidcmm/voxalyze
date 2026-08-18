@@ -88,10 +88,14 @@ class AzureStreamingTranscriber:
             return
         try:
             result_json = json.loads(evt.result.json)
-        except (json.JSONDecodeError, AttributeError):
-            logger.warning("azure streaming result had no parseable json")
+        except (json.JSONDecodeError, AttributeError) as exc:
+            logger.warning("azure streaming result had no parseable json: %r", exc)
             return
-        segment = parse_recognition_result(result_json)
+        try:
+            segment = parse_recognition_result(result_json)
+        except (KeyError, AttributeError, TypeError) as exc:
+            logger.warning("azure streaming result failed to parse: %r", exc)
+            return
         if segment is not None:
             self._loop.call_soon_threadsafe(self.segments.put_nowait, segment)
 

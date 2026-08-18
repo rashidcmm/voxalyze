@@ -112,3 +112,47 @@ async def test_transcriber_queues_a_recognized_segment(monkeypatch):
 
     transcriber.close()
     assert fake_recognizer.stopped is True
+
+
+async def test_transcriber_logs_and_drops_result_with_word_missing_duration(monkeypatch):
+    monkeypatch.setenv("AZURE_SPEECH_KEY", "test-key")
+    monkeypatch.setenv("AZURE_SPEECH_REGION", "test-region")
+    get_settings.cache_clear()
+
+    fake_recognizer = _FakeRecognizer()
+    loop = asyncio.get_event_loop()
+    transcriber = AzureStreamingTranscriber(
+        loop, recognizer_factory=lambda key, region, push_stream: fake_recognizer
+    )
+
+    # No "Duration" key on the word entry -> parse_recognition_result raises
+    # KeyError internally; _on_recognized must catch it, log it, and simply
+    # drop the segment rather than letting the exception escape onto the
+    # SDK's background callback thread.
+    fake_recognizer.fire(
+        speechsdk.ResultReason.RecognizedSpeech,
+        {"NBest": [{"Display": "broken", "Words": [{"Word": "broken", "Offset": 0}]}]},
+    )
+    assert transcriber.segments.empty()
+
+    transcriber.close()
+
+
+async def test_transcriber_logs_and_drops_non_dict_json_result(monkeypatch):
+    monkeypatch.setenv("AZURE_SPEECH_KEY", "test-key")
+    monkeypatch.setenv("AZURE_SPEECH_REGION", "test-region")
+    get_settings.cache_clear()
+
+    fake_recognizer = _FakeRecognizer()
+    loop = asyncio.get_event_loop()
+    transcriber = AzureStreamingTranscriber(
+        loop, recognizer_factory=lambda key, region, push_stream: fake_recognizer
+    )
+
+    # The JSON decodes fine but to a list, not a dict -> result_json.get(...)
+    # in parse_recognition_result raises AttributeError; must be caught,
+    # logged, and dropped without propagating.
+    fake_recognizer.fire(speechsdk.ResultReason.RecognizedSpeech, [])
+    assert transcriber.segments.empty()
+
+    transcriber.close()
