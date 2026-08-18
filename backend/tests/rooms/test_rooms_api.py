@@ -84,3 +84,28 @@ async def test_join_room_404s_on_an_unknown_code(client, db_session):
     user = await _create_user(db_session, "solo@example.com", "Solo")
     resp = await client.post("/rooms/ZZZZZZZZ/join", headers=_auth_headers(user))
     assert resp.status_code == 404
+
+
+async def test_livekit_identity_is_an_opaque_per_join_id(client, db_session):
+    """LiveKit broadcasts participant.identity to every peer, and the stats
+    layer keys on RoomParticipant.id — so the identity must BE the participant
+    id: opaque, not derived from the user, and matching what the stats layer
+    looks up."""
+    from sqlalchemy import select
+
+    from app.models.room_participant import RoomParticipant
+
+    user = await _create_user(db_session, "ident@example.com", "Ident")
+    create_resp = await client.post("/rooms", json={"mode": "anonymous"}, headers=_auth_headers(user))
+    join_resp = await client.post(
+        f"/rooms/{create_resp.json()['join_code']}/join", headers=_auth_headers(user)
+    )
+    participant_id = join_resp.json()["participant_id"]
+
+    participant = (
+        await db_session.execute(select(RoomParticipant).where(RoomParticipant.id == participant_id))
+    ).scalar_one()
+
+    assert participant.livekit_identity == str(participant.id)
+    assert str(user.id) not in participant.livekit_identity
+    assert str(create_resp.json()["id"]) not in participant.livekit_identity

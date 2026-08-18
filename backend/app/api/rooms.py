@@ -83,9 +83,22 @@ async def join_room(
 
         seat_number = active_count + 1
         alias = f"Speaker {seat_number}" if room.mode == RoomMode.ANONYMOUS else current_user.name
-        livekit_identity = f"{current_user.id}:{room.id}"
+        # The room bot keys every speech segment by LiveKit identity, while the
+        # live-stats WS and the analysis job key by RoomParticipant.id — so the
+        # identity IS the participant id, not a composite. Generated up front
+        # because the identity has to be known before the row is flushed.
+        #
+        # It also has to stay opaque: LiveKit broadcasts participant.identity to
+        # every peer, so a user-derived identity would leak the real user's UUID
+        # into anonymous rooms and, being stable across rooms, allow correlating
+        # an alias back to a real person.
+        participant_id = uuid.uuid4()
         participant = RoomParticipant(
-            room_id=room.id, user_id=current_user.id, alias_name=alias, livekit_identity=livekit_identity
+            id=participant_id,
+            room_id=room.id,
+            user_id=current_user.id,
+            alias_name=alias,
+            livekit_identity=str(participant_id),
         )
         db.add(participant)
         room.status = RoomStatus.LIVE
