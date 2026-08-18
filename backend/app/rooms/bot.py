@@ -39,6 +39,13 @@ class RoomBot:
         self._vads: dict[str, StreamingVAD] = {}
         self._wave_writers: dict[str, wave.Wave_write] = {}
         self._transcribers: dict[str, AzureStreamingTranscriber] = {}
+        # Participants close_participant() has already run for. Once a WAV
+        # file is closed it must never be reopened — wave.open(path, "wb")
+        # always starts an empty file, so a late frame arriving after close
+        # (e.g. a buffered audio-stream event racing participant_disconnected
+        # in run()) would silently truncate the whole recording. handle_audio_frame
+        # checks this set and drops such frames instead.
+        self._closed_participants: set[str] = set()
 
     def _vad_for(self, participant_id: str) -> StreamingVAD:
         if participant_id not in self._vads:
@@ -57,6 +64,13 @@ class RoomBot:
 
     def handle_audio_frame(self, participant_id: str, pcm: np.ndarray) -> None:
         """pcm: one 20ms int16 mono frame at 16kHz (FRAME_SAMPLES samples)."""
+        if participant_id in self._closed_participants:
+            logger.warning(
+                "dropped a late audio frame for already-closed participant %s in room %s",
+                participant_id,
+                self.room_id,
+            )
+            return
         self._wave_writer_for(participant_id).writeframes(pcm.tobytes())
 
         vad = self._vad_for(participant_id)
@@ -72,6 +86,7 @@ class RoomBot:
             transcriber.push_pcm(pcm.tobytes())
 
     def close_participant(self, participant_id: str) -> None:
+        self._closed_participants.add(participant_id)
         vad = self._vads.get(participant_id)
         if vad is not None:
             segments_before = len(vad.closed_segments)

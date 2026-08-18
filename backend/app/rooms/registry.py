@@ -3,10 +3,19 @@ room, the speech segments recorded so far, and a fan-out for the host's live
 WebSocket dashboard. Lives in the FastAPI app's own process/event loop — fine
 at this project's scale (<=6 participants per room); a multi-process deploy
 would need this moved to Redis instead (already used for the ARQ queue).
+
+Subscriber queues carry two kinds of wakeup: `None` is a plain "a segment was
+recorded, go recompute stats" ping (see `_broadcast`); `STOP_SENTINEL` is a
+distinct close signal pushed by `stop_bot` so a WS handler blocked on
+`queue.get()` wakes up and can shut the connection down instead of hanging
+forever once the room's bot has stopped. Consumers (Task 8's WS handler)
+must check `is STOP_SENTINEL` and stop reading from the queue when they see it.
 """
 import asyncio
 
 from app.rooms.live_stats import ParticipantStats, SpeechSegment, compute_participant_stats
+
+STOP_SENTINEL = object()  # pushed to subscriber queues when a room's bot stops; see module docstring
 
 
 class RoomRegistry:
@@ -32,7 +41,11 @@ class RoomRegistry:
         task = self._bot_tasks.pop(room_id, None)
         if task is not None:
             task.cancel()
-        self._subscribers.pop(room_id, None)
+        # Wake any WS handler blocked on queue.get() with the close sentinel
+        # before dropping the subscribers, so it can shut down cleanly instead
+        # of hanging forever waiting for a segment that will never come.
+        for queue in self._subscribers.pop(room_id, set()):
+            queue.put_nowait(STOP_SENTINEL)
 
     def subscribe(self, room_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue()

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from app.rooms.live_stats import SpeechSegment
-from app.rooms.registry import RoomRegistry
+from app.rooms.registry import STOP_SENTINEL, RoomRegistry
 
 
 def test_record_segment_is_reflected_in_live_stats():
@@ -43,3 +43,14 @@ def test_unsubscribe_stops_further_wakeups():
     registry.unsubscribe("room-4", queue)
     registry.record_segment("room-4", SpeechSegment("a", 0.0, 1.0))
     assert queue.empty()
+
+
+async def test_stop_bot_wakes_a_subscriber_with_the_close_sentinel():
+    registry = RoomRegistry()
+    queue = registry.subscribe("room-5")
+
+    registry.stop_bot("room-5")
+
+    item = await asyncio.wait_for(queue.get(), timeout=1.0)  # doesn't hang -> stop_bot woke it
+    assert item is STOP_SENTINEL
+    assert item is not None  # distinguishable from a normal broadcast wakeup ping

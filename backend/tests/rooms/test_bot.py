@@ -55,3 +55,39 @@ def test_close_participant_flushes_a_still_open_segment():
     segments = registry.segments_for("room-3")
     assert len(segments) == 1
     assert segments[0].duration_s == pytest.approx(0.06, abs=0.01)
+
+
+def test_close_participant_writes_a_valid_non_empty_wav():
+    """Regression coverage for the normal close path, kept green alongside
+    the late-frame fix below: a clean close still produces a valid,
+    non-empty WAV file."""
+    registry = RoomRegistry()
+    bot = RoomBot(room_id="room-5", registry=registry)
+    bot.handle_audio_frame("participant-e", LOUD_FRAME)
+    bot.handle_audio_frame("participant-e", LOUD_FRAME)
+    bot.close_participant("participant-e")
+
+    path = room_participant_audio_path("room-5", "participant-e")
+    assert path.exists()
+    size_after_close = path.stat().st_size
+    assert size_after_close > 0
+
+
+def test_a_late_frame_after_close_does_not_truncate_the_recording(caplog):
+    """Regression test for the truncation bug: handle_audio_frame() called
+    for a participant AFTER close_participant() must not reopen (and thus
+    truncate) the already-closed WAV file."""
+    registry = RoomRegistry()
+    bot = RoomBot(room_id="room-4", registry=registry)
+    bot.handle_audio_frame("participant-d", LOUD_FRAME)
+    bot.close_participant("participant-d")
+
+    path = room_participant_audio_path("room-4", "participant-d")
+    size_after_close = path.stat().st_size
+    assert size_after_close > 0
+
+    with caplog.at_level("WARNING"):
+        bot.handle_audio_frame("participant-d", LOUD_FRAME)  # late frame, must not raise
+
+    assert path.stat().st_size == size_after_close  # unchanged, not truncated to 0
+    assert "participant-d" in caplog.text
