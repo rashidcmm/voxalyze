@@ -33,3 +33,8 @@ httpx==0.28.1
 # Rooms (multi-party GD room MVP)
 livekit-api==1.2.0
 livekit==1.1.14
+
+# Real-time streaming STT (unlike app/scoring/pronunciation.py's plain REST
+# call, Azure's streaming protocol is a proprietary WebSocket framing only
+# the SDK owns — worth the one native dependency).
+azure-cognitiveservices-speech==1.50.0
