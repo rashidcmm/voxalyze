@@ -1,7 +1,12 @@
 """The backend's own LiveKit participant: joins each live room, subscribes to
 every other participant's audio track, and for each one:
   1. runs energy-based VAD (app/rooms/vad.py) to build speech segments,
-  2. streams the same PCM to Azure for live transcription (app/rooms/azure_stream.py),
+  2. streams the same PCM to Azure for live transcription
+     (app/rooms/azure_stream.py). NOTE: the recognition results Azure sends
+     back are NOT drained or persisted today — nothing reads
+     AzureStreamingTranscriber.segments and no room_transcript_segments row
+     is ever written from here. Wiring that up is Task 12 of
+     docs/superpowers/plans/2026-08-19-gd-room-analytics-extension.md.
   3. records the raw audio to local disk (audio only — no video, per the
      design spec's Non-goals).
 
@@ -16,7 +21,10 @@ tested by design (see this task's header note); verified manually per the
 """
 import asyncio
 import logging
+import time
+import uuid
 import wave
+from typing import Callable
 
 import numpy as np
 from livekit import rtc
@@ -27,18 +35,30 @@ from app.rooms.azure_stream import AzureStreamingTranscriber
 from app.rooms.live_stats import SpeechSegment
 from app.rooms.livekit_tokens import issue_bot_token
 from app.rooms.registry import RoomRegistry
-from app.rooms.vad import FRAME_SAMPLES, SAMPLE_RATE_HZ, StreamingVAD
+from app.rooms.vad import FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE_HZ, StreamingVAD
 
 logger = logging.getLogger("rooms.bot")
 
 
 class RoomBot:
-    def __init__(self, room_id: str, registry: RoomRegistry):
+    def __init__(self, room_id: str, registry: RoomRegistry, clock: Callable[[], float] = time.monotonic):
         self.room_id = room_id
         self.registry = registry
+        # One RoomBot is constructed per room, on the first join (see
+        # app/api/rooms.py's join_room), so this is the room's start reference
+        # — the same moment live_stats_ws approximates with Room.created_at.
+        # Every participant's StreamingVAD is seeded with its offset from here
+        # so all their segments land on one shared timeline (see _vad_for).
+        # `clock` is injectable so tests can advance room time deterministically.
+        self._clock = clock
+        self._room_start_ref = clock()
         self._vads: dict[str, StreamingVAD] = {}
         self._wave_writers: dict[str, wave.Wave_write] = {}
         self._transcribers: dict[str, AzureStreamingTranscriber] = {}
+        # Leftover samples from an audio-stream event whose length wasn't a
+        # whole multiple of FRAME_SAMPLES, carried into the next event so no
+        # audio is dropped — see chunk_frames().
+        self._frame_residuals: dict[str, np.ndarray] = {}
         # Participants close_participant() has run for and who have not since
         # reconnected. handle_audio_frame() drops frames for anyone in this
         # set instead of writing them, so a stray frame from a dead
@@ -59,8 +79,67 @@ class RoomBot:
 
     def _vad_for(self, participant_id: str) -> StreamingVAD:
         if participant_id not in self._vads:
-            self._vads[participant_id] = StreamingVAD(participant_id=participant_id)
+            # Seeded with how far into the room this participant's first frame
+            # arrived, so a late joiner's segments aren't timestamped from
+            # their own zero — see StreamingVAD.start_offset_s.
+            offset_s = max(0.0, self._clock() - self._room_start_ref)
+            self._vads[participant_id] = StreamingVAD(participant_id=participant_id, start_offset_s=offset_s)
         return self._vads[participant_id]
+
+    def chunk_frames(self, participant_id: str, samples: np.ndarray) -> list[np.ndarray]:
+        """Split an arbitrary-length int16 PCM buffer into whole FRAME_SAMPLES
+        frames, carrying any remainder into the next call for the same
+        participant.
+
+        rtc.AudioStream delivers events at whatever cadence the underlying
+        WebRTC stack picks (commonly 10ms / 160 samples at 16kHz) — chunking
+        by slicing each event independently would drop every event smaller
+        than one frame (i.e. all of them) and lose the tail of every event
+        that isn't an exact multiple. run() also asks for frame_size_ms=20,
+        but that's a request to the SDK, not a guarantee, so the residual
+        buffer here is what actually makes the pipeline lossless."""
+        residual = self._frame_residuals.get(participant_id)
+        if residual is not None and residual.size:
+            buffer = np.concatenate((residual, samples))
+        else:
+            buffer = samples
+        frame_count = buffer.size // FRAME_SAMPLES
+        consumed = frame_count * FRAME_SAMPLES
+        self._frame_residuals[participant_id] = np.array(buffer[consumed:], dtype=np.int16)
+        return [buffer[i : i + FRAME_SAMPLES] for i in range(0, consumed, FRAME_SAMPLES)]
+
+    def _start_transcriber(self, participant_id: str, loop: asyncio.AbstractEventLoop) -> None:
+        """(Re)open the Azure streaming transcriber for a participant. A
+        reconnect fires track_subscribed again for the same identity, so any
+        transcriber already open for it must be closed first — otherwise the
+        old one is overwritten, leaking its push stream and recognizer."""
+        previous = self._transcribers.pop(participant_id, None)
+        if previous is not None:
+            try:
+                previous.close()
+            except Exception:  # noqa: BLE001 — a failed close must not block the replacement
+                logger.warning(
+                    "failed to close the previous transcriber for %s (room %s)", participant_id, self.room_id
+                )
+        try:
+            self._transcribers[participant_id] = AzureStreamingTranscriber(loop)
+        except Exception:  # noqa: BLE001 — transcription is best-effort; VAD/recording carry on
+            logger.warning("live transcription unavailable for %s (room %s)", participant_id, self.room_id)
+
+    def _is_valid_identity(self, identity: str) -> bool:
+        """LiveKit's participant.identity is one trust hop further out than
+        the server-generated ids app/core/storage.py assumes: it arrives over
+        the wire and becomes a filesystem path component (and a dict key).
+        join_room always issues it as a RoomParticipant UUID, so anything else
+        is bogus — log and skip rather than crash the bot."""
+        try:
+            uuid.UUID(identity)
+            return True
+        except (ValueError, AttributeError, TypeError):
+            logger.warning(
+                "ignoring livekit participant with a non-uuid identity %r in room %s", identity, self.room_id
+            )
+            return False
 
     def _wave_writer_for(self, participant_id: str) -> wave.Wave_write:
         if participant_id not in self._wave_writers:
@@ -92,6 +171,10 @@ class RoomBot:
                 self.room_id,
             )
             return
+        # Synchronous disk write on the event loop: acceptable at this
+        # project's stated scale (<=6 participants per room, 640 bytes per
+        # 20ms frame); would need offloading to a thread/executor before any
+        # larger room size.
         self._wave_writer_for(participant_id).writeframes(pcm.tobytes())
 
         vad = self._vad_for(participant_id)
@@ -116,7 +199,14 @@ class RoomBot:
 
     def close_participant(self, participant_id: str) -> None:
         self._closed_participants.add(participant_id)
-        vad = self._vads.get(participant_id)
+        self._frame_residuals.pop(participant_id, None)
+        # Popped (not just read) for symmetry with _wave_writers/_transcribers
+        # below: a room churning through join/leave cycles otherwise retains
+        # every departed participant's VAD state for the room's lifetime.
+        # Safe now that VAD clocks are room-relative — a reconnect builds a
+        # fresh VAD seeded with the current room offset, so its segments still
+        # continue the shared timeline instead of restarting at 0.0.
+        vad = self._vads.pop(participant_id, None)
         if vad is not None:
             segments_before = len(vad.closed_segments)
             vad.flush()
@@ -140,19 +230,23 @@ class RoomBot:
         loop = asyncio.get_event_loop()
 
         async def _forward_track(participant_id: str, track: rtc.Track) -> None:
-            try:
-                self._transcribers[participant_id] = AzureStreamingTranscriber(loop)
-            except Exception:
-                logger.warning("live transcription unavailable for %s (room %s)", participant_id, self.room_id)
-            audio_stream = rtc.AudioStream(track, sample_rate=SAMPLE_RATE_HZ, num_channels=1)
+            self._start_transcriber(participant_id, loop)
+            # frame_size_ms=20 asks the SDK to deliver events already sized to
+            # exactly FRAME_SAMPLES; chunk_frames() still buffers any remainder
+            # so a stack that ignores the hint can't silently drop audio.
+            audio_stream = rtc.AudioStream(
+                track, sample_rate=SAMPLE_RATE_HZ, num_channels=1, frame_size_ms=FRAME_MS
+            )
             async for event in audio_stream:
                 samples = np.frombuffer(event.frame.data, dtype=np.int16)
-                for i in range(0, len(samples) - FRAME_SAMPLES + 1, FRAME_SAMPLES):
-                    self.handle_audio_frame(participant_id, samples[i : i + FRAME_SAMPLES])
+                for frame in self.chunk_frames(participant_id, samples):
+                    self.handle_audio_frame(participant_id, frame)
 
         @room.on("track_subscribed")
         def on_track_subscribed(track, publication, participant):
             if track.kind == rtc.TrackKind.KIND_AUDIO:
+                if not self._is_valid_identity(participant.identity):
+                    return
                 # A new audio track being subscribed for this identity means
                 # a live connection is behind it — whether this is a
                 # first-time join or a reconnect after participant_disconnected
@@ -163,6 +257,8 @@ class RoomBot:
 
         @room.on("participant_disconnected")
         def on_participant_disconnected(participant):
+            if not self._is_valid_identity(participant.identity):
+                return
             self.close_participant(participant.identity)
 
         token = issue_bot_token(room_name=self.room_id)

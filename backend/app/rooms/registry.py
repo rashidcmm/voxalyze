@@ -41,6 +41,13 @@ class RoomRegistry:
         task = self._bot_tasks.pop(room_id, None)
         if task is not None:
             task.cancel()
+        # Drop the room's segments with the rest of its state, or this dict
+        # grows forever in a long-lived API process. Safe to clear here:
+        # end_room's only work after stop_bot() is DB writes plus enqueuing
+        # analyze_room_session, which reads room_transcript_segments from
+        # Postgres, not this registry; and the WS handler woken by the
+        # sentinel below breaks out of its loop without recomputing stats.
+        self._segments.pop(room_id, None)
         # Wake any WS handler blocked on queue.get() with the close sentinel
         # before dropping the subscribers, so it can shut down cleanly instead
         # of hanging forever waiting for a segment that will never come.

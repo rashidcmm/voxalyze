@@ -52,3 +52,27 @@ def test_flush_closes_a_still_open_segment():
     assert vad.closed_segments == []  # nothing closed yet — still "speaking"
     vad.flush()
     assert len(vad.closed_segments) == 1
+
+
+def test_start_offset_shifts_every_timestamp_onto_the_shared_room_clock():
+    """A participant whose first frame arrives 12s into the room must emit
+    room-relative timestamps, not timestamps relative to their own arrival."""
+    vad = StreamingVAD(participant_id="late", start_offset_s=12.0)
+    for _ in range(10):  # 200ms of speech
+        vad.push_frame(LOUD_FRAME)
+    for _ in range(20):  # past HANGOVER_FRAMES, closes the segment
+        vad.push_frame(SILENT_FRAME)
+
+    start_s, end_s = vad.closed_segments[0]
+    assert start_s == pytest.approx(12.0)
+    assert end_s == pytest.approx(12.2, abs=0.001)
+
+
+def test_flush_also_respects_the_start_offset():
+    vad = StreamingVAD(participant_id="late", start_offset_s=5.0)
+    for _ in range(5):
+        vad.push_frame(LOUD_FRAME)
+    vad.flush()
+    start_s, end_s = vad.closed_segments[0]
+    assert start_s == pytest.approx(5.0)
+    assert end_s == pytest.approx(5.1, abs=0.001)

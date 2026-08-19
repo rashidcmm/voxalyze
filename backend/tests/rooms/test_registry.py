@@ -54,3 +54,16 @@ async def test_stop_bot_wakes_a_subscriber_with_the_close_sentinel():
     item = await asyncio.wait_for(queue.get(), timeout=1.0)  # doesn't hang -> stop_bot woke it
     assert item is STOP_SENTINEL
     assert item is not None  # distinguishable from a normal broadcast wakeup ping
+
+
+def test_stop_bot_frees_the_rooms_segments():
+    """_segments used to be left behind by stop_bot, so a long-lived API
+    process accumulated every segment of every room it had ever hosted."""
+    registry = RoomRegistry()
+    registry.record_segment("room-6", SpeechSegment("a", 0.0, 1.0))
+    assert registry.segments_for("room-6") != []
+
+    registry.stop_bot("room-6")
+
+    assert registry.segments_for("room-6") == []
+    assert "room-6" not in registry._segments

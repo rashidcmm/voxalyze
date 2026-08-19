@@ -26,14 +26,28 @@ class StreamingVAD:
     really ended (so a brief pause mid-sentence doesn't split it), but the
     recorded end_s is the moment speech actually stopped — the *first* silent
     frame of that run — not the later moment the hangover confirms it;
-    otherwise every segment's end would be inflated by ~300ms."""
+    otherwise every segment's end would be inflated by ~300ms.
+
+    `start_offset_s` seeds the internal clock so emitted timestamps are
+    relative to a *shared* origin rather than to this instance's own first
+    frame. Participants join a room at different real times, and every
+    participant's segments end up on one axis in app/rooms/live_stats.py
+    (interruption detection, talk-time percentages) — so a late joiner whose
+    VAD started at 0.0 would have their speech folded back onto the start of
+    the discussion, fabricating overlaps. app/rooms/bot.py passes each
+    participant's offset from the room's start; the default 0.0 keeps a
+    stand-alone VAD behaving exactly as before."""
 
     participant_id: str
     closed_segments: list[tuple[float, float]] = field(default_factory=list)
+    start_offset_s: float = 0.0
     _elapsed_s: float = 0.0
     _speech_start_s: float | None = None
     _speech_end_candidate_s: float | None = None
     _silence_run: int = 0
+
+    def __post_init__(self) -> None:
+        self._elapsed_s = self.start_offset_s
 
     def push_frame(self, pcm_frame: np.ndarray) -> None:
         if pcm_frame.size != FRAME_SAMPLES:
