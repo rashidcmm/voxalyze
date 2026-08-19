@@ -14,10 +14,12 @@ from app.core.security import decode_access_token
 from app.jobs.pool import get_arq_pool
 from app.models.room import Room, RoomMode, RoomStatus
 from app.models.room_participant import RoomParticipant
+from app.models.room_report import RoomReport
 from app.models.user import User
 from app.rooms.livekit_tokens import RoomsNotConfigured, issue_participant_token
 from app.rooms.registry import STOP_SENTINEL, get_registry
 from app.schemas.room import RoomCreate, RoomJoinResponse, RoomResponse
+from app.schemas.room_report import RoomParticipantReport, RoomReportResponse
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
@@ -212,3 +214,52 @@ async def live_stats_ws(websocket: WebSocket, room_id: uuid.UUID, db: DBSession 
         pass
     finally:
         registry.unsubscribe(str(room_id), queue)
+
+
+@router.get("/{room_id}/report", response_model=RoomReportResponse)
+async def get_room_report(
+    room_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    requesting_participant = (
+        await db.execute(
+            select(RoomParticipant).where(
+                RoomParticipant.room_id == room_id, RoomParticipant.user_id == current_user.id
+            )
+        )
+    ).scalar_one_or_none()
+    if requesting_participant is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a participant in this room")
+
+    report = (await db.execute(select(RoomReport).where(RoomReport.room_id == room_id))).scalar_one_or_none()
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not ready yet")
+
+    room = (await db.execute(select(Room).where(Room.id == room_id))).scalar_one()
+    all_participants = {
+        str(p.id): p
+        for p in (
+            await db.execute(select(RoomParticipant).where(RoomParticipant.room_id == room_id))
+        ).scalars()
+    }
+
+    participants = [
+        RoomParticipantReport(
+            participant_id=pid,
+            label=all_participants[pid].alias_name if pid in all_participants else pid,
+            is_you=(pid == str(requesting_participant.id)),
+            **{k: v for k, v in stats.items() if k != "participant_id"},
+        )
+        for pid, stats in report.participant_stats.items()
+    ]
+
+    return RoomReportResponse(
+        room_id=room.id,
+        mode=room.mode,
+        generated_at=report.generated_at,
+        dominance_index=report.dominance_index,
+        participants=participants,
+        qualitative_status=report.qualitative_status,
+        qualitative=report.qualitative_result,
+    )
