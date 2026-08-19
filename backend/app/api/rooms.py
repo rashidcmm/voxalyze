@@ -1,16 +1,22 @@
+import asyncio
 import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession as DBSession
 
 from app.api.deps import get_current_user
 from app.core.config import get_settings
 from app.core.db import get_db
+from app.core.security import decode_access_token
+from app.jobs.pool import get_arq_pool
 from app.models.room import Room, RoomMode, RoomStatus
 from app.models.room_participant import RoomParticipant
 from app.models.user import User
 from app.rooms.livekit_tokens import RoomsNotConfigured, issue_participant_token
+from app.rooms.registry import STOP_SENTINEL, get_registry
 from app.schemas.room import RoomCreate, RoomJoinResponse, RoomResponse
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -102,8 +108,17 @@ async def join_room(
         )
         db.add(participant)
         room.status = RoomStatus.LIVE
+        is_first_participant = active_count == 0
         await db.commit()
         await db.refresh(participant)
+
+        if is_first_participant:
+            from app.rooms.bot import RoomBot
+
+            registry = get_registry()
+            bot = RoomBot(room_id=str(room.id), registry=registry)
+            task = asyncio.create_task(bot.run())
+            registry.register_bot_task(str(room.id), task)
     else:
         participant = existing
 
@@ -123,3 +138,77 @@ async def join_room(
         mode=room.mode,
         max_participants=room.max_participants,
     )
+
+
+@router.post("/{room_id}/end", response_model=RoomResponse)
+async def end_room(
+    room_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
+    room = (await db.execute(select(Room).where(Room.id == room_id))).scalar_one_or_none()
+    if room is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+    if room.host_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the host can end the room")
+    if room.status not in (RoomStatus.WAITING, RoomStatus.LIVE):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room already ended")
+
+    get_registry().stop_bot(str(room.id))
+    room.status = RoomStatus.ENDED
+    room.ended_at = func.now()
+    await db.commit()
+    await db.refresh(room)
+
+    pool = await get_arq_pool()
+    await pool.enqueue_job("analyze_room_session", str(room.id), _job_id=f"analyze_room:{room.id}")
+
+    return room
+
+
+@router.websocket("/{room_id}/live")
+async def live_stats_ws(websocket: WebSocket, room_id: uuid.UUID, db: DBSession = Depends(get_db)):
+    token = websocket.query_params.get("token")
+    payload = decode_access_token(token) if token else None
+    subject = payload.get("sub") if payload else None
+    if subject is None:
+        # Reject before accepting: sending "websocket.close" as the first ASGI
+        # message (instead of accept-then-close) is what makes the client see
+        # this as a rejected handshake rather than a connection that opened
+        # and was immediately dropped.
+        await websocket.close(code=4401)
+        return
+
+    room = (await db.execute(select(Room).where(Room.id == room_id))).scalar_one_or_none()
+    if room is None or str(room.host_user_id) != subject:
+        await websocket.close(code=4403)
+        return
+
+    await websocket.accept()
+
+    participants = (
+        await db.execute(
+            select(RoomParticipant).where(RoomParticipant.room_id == room_id, RoomParticipant.left_at.is_(None))
+        )
+    ).scalars().all()
+    participant_ids = [str(p.id) for p in participants]
+    started_at = room.created_at
+
+    registry = get_registry()
+    queue = registry.subscribe(str(room_id))
+    try:
+        while True:
+            item = await queue.get()
+            if item is STOP_SENTINEL:
+                # The room's bot has stopped (see registry.stop_bot); no more
+                # stats will ever arrive, so close instead of blocking on
+                # queue.get() forever.
+                await websocket.close()
+                break
+            elapsed_s = (datetime.now(timezone.utc) - started_at).total_seconds()
+            stats = registry.live_stats(str(room_id), participant_ids, elapsed_s)
+            await websocket.send_json({pid: asdict(s) for pid, s in stats.items()})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        registry.unsubscribe(str(room_id), queue)
