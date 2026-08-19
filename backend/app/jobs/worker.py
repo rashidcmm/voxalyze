@@ -4,6 +4,7 @@ from arq.connections import RedisSettings
 from arq.worker import func
 
 from app.core.config import get_settings
+from app.jobs.room_analysis import MAX_TRIES as ROOM_ANALYSIS_MAX_TRIES, analyze_room_session
 from app.jobs.scoring import MAX_TRIES as SCORING_MAX_TRIES, score_session
 from app.jobs.transcription import MAX_TRIES, transcribe_session
 
@@ -34,6 +35,7 @@ class WorkerSettings:
         dummy_job,
         func(transcribe_session, max_tries=MAX_TRIES),
         func(score_session, max_tries=SCORING_MAX_TRIES),
+        func(analyze_room_session, max_tries=ROOM_ANALYSIS_MAX_TRIES),
     ]
     on_startup = startup
     on_shutdown = shutdown
