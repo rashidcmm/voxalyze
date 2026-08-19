@@ -1,10 +1,11 @@
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from starlette.testclient import TestClient
 
-from app.api.rooms import live_stats_ws
+from app.api.rooms import _log_bot_task_failure, live_stats_ws
 from app.core.config import get_settings
 from app.core.security import create_access_token, hash_password
 from app.jobs import pool as jobs_pool
@@ -203,3 +204,129 @@ async def test_live_stats_ws_closes_cleanly_when_the_bot_stops(client, db_sessio
     finally:
         if not task.done():
             task.cancel()
+
+
+# --- WS token revocation (final-review item 4) -------------------------------
+
+
+async def test_live_stats_ws_rejects_a_token_revoked_by_a_password_change(client, db_session):
+    """live_stats_ws used to decode the token and read payload["sub"] directly,
+    skipping the password_changed_at revocation check get_current_user applies
+    over HTTP — so a WS connection could outlive the password reset that was
+    supposed to kill its token."""
+    host = await _create_user(db_session, "revoked@example.com", "Revoked")
+    create_resp = await client.post("/rooms", json={"mode": "identified"}, headers=_auth_headers(host))
+    room_id = create_resp.json()["id"]
+
+    token = create_access_token(str(host.id))
+    # The host changes their password *after* the token was issued.
+    host.password_changed_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    await db_session.commit()
+
+    # Same token, same host: HTTP rejects it...
+    http_resp = await client.get("/rooms", headers={"Authorization": f"Bearer {token}"})
+    assert http_resp.status_code == 401
+
+    # ...and so must the WebSocket, rather than opening a live stats stream.
+    fake_ws = _FakeWebSocket(token)
+    await live_stats_ws(fake_ws, uuid.UUID(room_id), db=db_session)
+    assert fake_ws.accepted is False
+    assert fake_ws.closed_code == 4401
+
+
+async def test_live_stats_ws_rejects_a_token_for_a_deleted_user(client, db_session):
+    """The other check get_current_user makes that the WS handler skipped:
+    the subject must still resolve to a real user row."""
+    host = await _create_user(db_session, "ghost@example.com", "Ghost")
+    create_resp = await client.post("/rooms", json={"mode": "identified"}, headers=_auth_headers(host))
+    room_id = create_resp.json()["id"]
+
+    token = create_access_token(str(uuid.uuid4()))  # a subject with no user row
+    fake_ws = _FakeWebSocket(token)
+    await live_stats_ws(fake_ws, uuid.UUID(room_id), db=db_session)
+    assert fake_ws.accepted is False
+    assert fake_ws.closed_code == 4401
+
+
+async def test_live_stats_ws_still_rejects_a_valid_non_host(client, db_session):
+    host = await _create_user(db_session, "wshost@example.com", "WsHost")
+    guest = await _create_user(db_session, "wsguest@example.com", "WsGuest")
+    create_resp = await client.post("/rooms", json={"mode": "identified"}, headers=_auth_headers(host))
+    room_id = create_resp.json()["id"]
+
+    fake_ws = _FakeWebSocket(create_access_token(str(guest.id)))
+    await live_stats_ws(fake_ws, uuid.UUID(room_id), db=db_session)
+    assert fake_ws.accepted is False
+    assert fake_ws.closed_code == 4403
+
+
+# --- Bot task failure visibility (final-review item 8) -----------------------
+
+
+async def test_a_crashing_bot_task_is_logged_at_error(caplog):
+    """join_room fires the bot off with create_task and never awaits it, so a
+    crash in run() (e.g. LiveKit unreachable) used to surface only as an
+    eventual "exception was never retrieved" warning with no operator signal."""
+
+    async def _boom():
+        raise RuntimeError("livekit connect failed")
+
+    task = asyncio.create_task(_boom())
+    with caplog.at_level("ERROR"):
+        task.add_done_callback(_log_bot_task_failure)
+        await asyncio.sleep(0)  # let the task finish and the callback run
+        await asyncio.sleep(0)
+
+    assert "room bot task failed" in caplog.text
+    assert "livekit connect failed" in caplog.text
+
+
+async def test_a_cancelled_bot_task_is_not_logged_as_a_failure(caplog):
+    """Cancellation is the normal shutdown path (registry.stop_bot)."""
+
+    async def _forever():
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(_forever())
+    await asyncio.sleep(0)
+    task.add_done_callback(_log_bot_task_failure)
+    task.cancel()
+    with caplog.at_level("ERROR"):
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert "room bot task failed" not in caplog.text
+
+
+# --- Participants are marked as left when the room ends (item 11) ------------
+
+
+async def test_end_room_stamps_left_at_on_every_active_participant(client, db_session):
+    """left_at was never set anywhere, so every participant of every past room
+    read as still active forever."""
+    from sqlalchemy import select
+
+    from app.models.room_participant import RoomParticipant
+
+    host = await _create_user(db_session, "leavehost@example.com", "LeaveHost")
+    guest = await _create_user(db_session, "leaveguest@example.com", "LeaveGuest")
+    create_resp = await client.post("/rooms", json={"mode": "identified"}, headers=_auth_headers(host))
+    room_id = create_resp.json()["id"]
+    join_code = create_resp.json()["join_code"]
+    await client.post(f"/rooms/{join_code}/join", headers=_auth_headers(host))
+    await client.post(f"/rooms/{join_code}/join", headers=_auth_headers(guest))
+
+    participants = (
+        await db_session.execute(
+            select(RoomParticipant).where(RoomParticipant.room_id == uuid.UUID(room_id))
+        )
+    ).scalars().all()
+    assert len(participants) == 2
+    assert all(p.left_at is None for p in participants)
+
+    assert (await client.post(f"/rooms/{room_id}/end", headers=_auth_headers(host))).status_code == 200
+
+    for participant in participants:
+        await db_session.refresh(participant)
+        assert participant.left_at is not None

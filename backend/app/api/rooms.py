@@ -1,16 +1,16 @@
 import asyncio
+import logging
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession as DBSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, resolve_token_user
 from app.core.config import get_settings
 from app.core.db import get_db
-from app.core.security import decode_access_token
 from app.jobs.pool import get_arq_pool
 from app.models.room import Room, RoomMode, RoomStatus
 from app.models.room_participant import RoomParticipant
@@ -22,6 +22,37 @@ from app.schemas.room import RoomCreate, RoomJoinResponse, RoomResponse
 from app.schemas.room_report import RoomParticipantReport, RoomReportResponse
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
+logger = logging.getLogger("api.rooms")
+
+
+def _room_response(room: Room, current_user: User) -> RoomResponse:
+    """RoomResponse deliberately exposes `is_host` rather than the raw
+    host_user_id: list_rooms returns rooms the caller merely *joined*, so
+    echoing the host's real, cross-room-stable user id there would hand every
+    guest of an anonymous room a durable identity for the host — the same leak
+    already closed for livekit_identity."""
+    return RoomResponse(
+        id=room.id,
+        join_code=room.join_code,
+        mode=room.mode,
+        status=room.status,
+        max_participants=room.max_participants,
+        is_host=(room.host_user_id == current_user.id),
+        created_at=room.created_at,
+    )
+
+
+def _log_bot_task_failure(task: asyncio.Task) -> None:
+    """Done-callback for a room's RoomBot task. A crash in run() (e.g. LiveKit
+    misconfigured or unreachable) is otherwise invisible: nobody awaits the
+    task, so it surfaces only as an "exception was never retrieved" warning at
+    GC time with no room context. Cancellation is the normal shutdown path
+    (registry.stop_bot) and is not an error."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("room bot task failed: %r", exc, exc_info=exc)
 
 
 async def _get_room_by_code(join_code: str, db: DBSession) -> Room:
@@ -42,7 +73,7 @@ async def create_room(
     db.add(room)
     await db.commit()
     await db.refresh(room)
-    return room
+    return _room_response(room, current_user)
 
 
 @router.get("", response_model=list[RoomResponse])
@@ -55,7 +86,7 @@ async def list_rooms(
     result = await db.execute(
         select(Room).where(Room.id.in_(hosted) | Room.id.in_(joined)).order_by(Room.created_at.desc())
     )
-    return result.scalars().all()
+    return [_room_response(room, current_user) for room in result.scalars().all()]
 
 
 @router.post("/{join_code}/join", response_model=RoomJoinResponse)
@@ -120,6 +151,7 @@ async def join_room(
             registry = get_registry()
             bot = RoomBot(room_id=str(room.id), registry=registry)
             task = asyncio.create_task(bot.run())
+            task.add_done_callback(_log_bot_task_failure)
             registry.register_bot_task(str(room.id), task)
     else:
         participant = existing
@@ -159,21 +191,33 @@ async def end_room(
     get_registry().stop_bot(str(room.id))
     room.status = RoomStatus.ENDED
     room.ended_at = func.now()
+    # Nothing else ever sets left_at, so without this every participant of
+    # every past room reads as still active forever. Safe to do here: the two
+    # queries that filter on left_at IS NULL (join_room's existing-row and
+    # active-count checks) only run for WAITING/LIVE rooms, and a join against
+    # an ENDED room is rejected by the status check before either one.
+    await db.execute(
+        update(RoomParticipant)
+        .where(RoomParticipant.room_id == room.id, RoomParticipant.left_at.is_(None))
+        .values(left_at=func.now())
+    )
     await db.commit()
     await db.refresh(room)
 
     pool = await get_arq_pool()
     await pool.enqueue_job("analyze_room_session", str(room.id), _job_id=f"analyze_room:{room.id}")
 
-    return room
+    return _room_response(room, current_user)
 
 
 @router.websocket("/{room_id}/live")
 async def live_stats_ws(websocket: WebSocket, room_id: uuid.UUID, db: DBSession = Depends(get_db)):
-    token = websocket.query_params.get("token")
-    payload = decode_access_token(token) if token else None
-    subject = payload.get("sub") if payload else None
-    if subject is None:
+    # Same validation get_current_user applies over HTTP — including the
+    # password_changed_at revocation check, which this handler used to skip by
+    # reading payload["sub"] directly, letting a WS connection outlive the
+    # password reset that revoked its token.
+    user = await resolve_token_user(websocket.query_params.get("token"), db)
+    if user is None:
         # Reject before accepting: sending "websocket.close" as the first ASGI
         # message (instead of accept-then-close) is what makes the client see
         # this as a rejected handshake rather than a connection that opened
@@ -182,7 +226,7 @@ async def live_stats_ws(websocket: WebSocket, room_id: uuid.UUID, db: DBSession 
         return
 
     room = (await db.execute(select(Room).where(Room.id == room_id))).scalar_one_or_none()
-    if room is None or str(room.host_user_id) != subject:
+    if room is None or room.host_user_id != user.id:
         await websocket.close(code=4403)
         return
 

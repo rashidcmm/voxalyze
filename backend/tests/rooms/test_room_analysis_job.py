@@ -85,3 +85,55 @@ async def test_analyze_room_session_returns_room_not_found_for_unknown_room(db_s
     monkeypatch.setattr("app.jobs.room_analysis.async_session_maker", db_session_maker)
     result = await analyze_room_session({}, "00000000-0000-0000-0000-000000000000")
     assert result == "room_not_found"
+
+
+# --- session duration (final-review item 10) ---------------------------------
+
+
+async def test_session_duration_uses_the_rooms_real_length_not_the_last_utterance(
+    db_session, db_session_maker, monkeypatch
+):
+    """The duration used to be max(segment.end_s), so a discussion that trailed
+    off into silence measured short — inflating everyone's talk_time_pct and
+    deflating silence_pct."""
+    from datetime import timedelta
+
+    from app.jobs.room_analysis import analyze_room_session
+
+    monkeypatch.setattr("app.jobs.room_analysis.async_session_maker", db_session_maker)
+    room, p1, p2 = await _seed_room(db_session)
+
+    # Segments end at 8.0s, but the host let the room run for 100s.
+    room.ended_at = room.created_at + timedelta(seconds=100)
+    await db_session.commit()
+
+    assert await analyze_room_session({}, str(room.id)) == "ok"
+
+    from sqlalchemy import select
+
+    report = (await db_session.execute(select(RoomReport).where(RoomReport.room_id == room.id))).scalar_one()
+    stats = report.participant_stats[str(p1.id)]
+    assert stats["talk_time_s"] == 5.0
+    # 5s of 100s, not 5s of 8s (which would have read as 62.5%).
+    assert stats["talk_time_pct"] == pytest.approx(5.0)
+    assert stats["silence_pct"] == pytest.approx(95.0)
+
+
+async def test_session_duration_falls_back_to_the_last_segment_when_ended_at_is_unset(
+    db_session, db_session_maker, monkeypatch
+):
+    """Defensive fallback — end_room always stamps ended_at, but a row missing
+    it must not crash or produce a zero-length session."""
+    from app.jobs.room_analysis import analyze_room_session
+
+    monkeypatch.setattr("app.jobs.room_analysis.async_session_maker", db_session_maker)
+    room, p1, _ = await _seed_room(db_session)
+    assert room.ended_at is None
+
+    assert await analyze_room_session({}, str(room.id)) == "ok"
+
+    from sqlalchemy import select
+
+    report = (await db_session.execute(select(RoomReport).where(RoomReport.room_id == room.id))).scalar_one()
+    stats = report.participant_stats[str(p1.id)]
+    assert stats["talk_time_pct"] == pytest.approx(62.5)  # 5s of the 8s transcript span

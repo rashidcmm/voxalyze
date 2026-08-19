@@ -1,9 +1,15 @@
 """ARQ job: finalize a room's post-session report once the host ends it.
 Mirrors app/jobs/scoring.py's shape (idempotency guard, isolated LLM-pass
-failure, exponential-backoff retry) but works from already-captured live
-data (room_transcript_segments) rather than re-running transcription — the
-transcript was already produced live by Azure streaming STT during the
-session (see app/rooms/bot.py).
+failure, exponential-backoff retry) but reads already-captured data
+(room_transcript_segments) rather than re-running transcription.
+
+NOTE on the current state: app/rooms/bot.py does capture live audio during
+the session (VAD speech segments + a per-participant WAV recording) and does
+stream that PCM to Azure, but nothing drains Azure's results yet, so
+room_transcript_segments is never populated — this job therefore runs against
+an empty transcript today and produces a report with zeroed stats. Persisting
+the live transcript is Task 12 of
+docs/superpowers/plans/2026-08-19-gd-room-analytics-extension.md.
 """
 import logging
 
@@ -57,7 +63,17 @@ async def analyze_room_session(ctx: dict, room_id: str) -> str:
             SpeechSegment(participant_id=str(row.participant_id), start_s=row.start_s, end_s=row.end_s)
             for row in transcript_rows
         ]
+        # The room's real wall-clock length, not the end of the last utterance:
+        # a discussion that trails off into silence (or whose final speaker's
+        # segment is missing) would otherwise be measured short, inflating
+        # everyone's talk_time_pct and deflating silence_pct. Falls back to the
+        # last segment end only if ended_at is somehow unset or nonsensical —
+        # end_room always sets it, so this is purely defensive.
         session_duration_s = max((row.end_s for row in transcript_rows), default=0.0)
+        if room.ended_at is not None and room.created_at is not None:
+            room_duration_s = (room.ended_at - room.created_at).total_seconds()
+            if room_duration_s > 0:
+                session_duration_s = room_duration_s
         transcript_text = _build_transcript_text(transcript_rows, alias_by_participant)
 
     try:
