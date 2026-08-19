@@ -83,6 +83,16 @@ just show as unscored until you add the keys below; nothing crashes.
      rather trade judgment quality for a cheaper/faster scorer — this is a config change,
      no code edit needed
 
+3. **LiveKit Cloud** (multi-party GD rooms) — free tier is enough for local dev:
+   - Go to [cloud.livekit.io](https://cloud.livekit.io) → create a project → Settings → Keys
+     → create an API key
+   - Put the project's websocket URL and the key/secret in `backend/.env` as
+     `LIVEKIT_URL` (e.g. `wss://your-project.livekit.cloud`), `LIVEKIT_API_KEY` and
+     `LIVEKIT_API_SECRET`
+   - Without them, `POST /rooms/{code}/join` returns a 503 with a pointer here; the rest of
+     the app is unaffected
+   - `ROOM_MAX_PARTICIPANTS` (default `6`) caps how large a room may be requested
+
 Restart the worker (`arq app.jobs.worker.WorkerSettings`) after adding keys — it loads them
 at process start.
 

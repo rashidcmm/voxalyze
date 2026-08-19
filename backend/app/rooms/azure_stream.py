@@ -58,10 +58,15 @@ def _default_recognizer_factory(key: str, region: str, push_stream):
 
 class AzureStreamingTranscriber:
     """One instance per room participant (see app/rooms/bot.py). `segments`
-    is an asyncio.Queue the caller drains to persist RoomTranscriptSegment
-    rows. The SDK's recognized callback fires on its own background thread,
-    so it's bridged into the event loop via call_soon_threadsafe rather than
-    touched directly from asyncio code.
+    is an asyncio.Queue recognition results are pushed onto. NOTE: no caller
+    drains it today — app/rooms/bot.py feeds PCM in but never reads results
+    back, so no RoomTranscriptSegment row is written from the live path.
+    Draining this queue and persisting it is Task 12 of
+    docs/superpowers/plans/2026-08-19-gd-room-analytics-extension.md.
+
+    The SDK's recognized callback fires on its own background thread, so it's
+    bridged into the event loop via call_soon_threadsafe rather than touched
+    directly from asyncio code.
 
     `recognizer_factory` is injectable so tests can supply a fake recognizer
     without a real Azure connection — the real PushAudioInputStream/

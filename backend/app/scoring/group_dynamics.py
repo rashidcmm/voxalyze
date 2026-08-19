@@ -26,6 +26,10 @@ SYSTEM_PROMPT = (
     "points with specific references'. Every observation must cite what actually "
     "happened in the transcript. NEVER use personality-trait labels or character "
     "judgments (e.g. 'arrogant', 'rude', 'shy') — describe behavior, not character. "
+    "Refer to participants ONLY by the labels given in the transcript; never "
+    "repeat or quote any personal name that may appear in what a participant "
+    "said (rooms can be anonymous, and a name spoken aloud must not end up in "
+    "the report). "
     "You are also given deterministic talk-time/interruption stats; use them as "
     "context, don't just restate the numbers."
 )
