@@ -91,3 +91,69 @@ def test_a_late_frame_after_close_does_not_truncate_the_recording(caplog):
 
     assert path.stat().st_size == size_after_close  # unchanged, not truncated to 0
     assert "participant-d" in caplog.text
+
+
+def test_a_stray_frame_with_no_reconnect_behind_it_stays_dropped_forever(caplog):
+    """A frame from a connection that never reconnects (no track_subscribed
+    fired again for this identity) must keep being dropped no matter how
+    many more arrive — the blackhole set only clears via reopen_participant,
+    never on its own."""
+    registry = RoomRegistry()
+    bot = RoomBot(room_id="room-6", registry=registry)
+    bot.handle_audio_frame("participant-f", LOUD_FRAME)
+    bot.close_participant("participant-f")
+
+    path = room_participant_audio_path("room-6", "participant-f")
+    size_after_close = path.stat().st_size
+
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            bot.handle_audio_frame("participant-f", LOUD_FRAME)
+
+    assert path.stat().st_size == size_after_close
+    assert caplog.text.count("participant-f") >= 3
+
+
+def test_reconnecting_participant_resumes_recording_instead_of_staying_blackholed(caplog):
+    """Reproduces the round-2 regression: run()'s participant_disconnected
+    handler calls close_participant(), which used to blackhole the identity
+    forever — including across a legitimate reconnect that reuses the same
+    LiveKit identity (rejoin/refresh reuses the same DB participant row while
+    left_at stays NULL). reopen_participant() (invoked from run()'s
+    track_subscribed handler on every subscription, reconnect or not) must
+    un-blackhole the identity so recording/VAD resume."""
+    registry = RoomRegistry()
+    bot = RoomBot(room_id="room-7", registry=registry)
+
+    bot.handle_audio_frame("participant-g", LOUD_FRAME)
+    bot.close_participant("participant-g")
+    path = room_participant_audio_path("room-7", "participant-g")
+    size_after_close = path.stat().st_size
+    assert size_after_close > 0
+
+    # The same identity reconnects: run()'s on_track_subscribed fires again
+    # and calls reopen_participant() before forwarding any frames.
+    bot.reopen_participant("participant-g")
+
+    with caplog.at_level("WARNING"):
+        bot.handle_audio_frame("participant-g", LOUD_FRAME)  # must be recorded, not dropped
+    assert "dropped a late audio frame" not in caplog.text
+
+    # Recorded: the WAV file grew (prior audio preserved, not truncated, plus
+    # the new post-reconnect frame appended).
+    assert path.stat().st_size > size_after_close
+
+    # VAD'd: enough further frames close a fresh speech segment for this
+    # participant, proving push_frame() is live again, not silently no-op.
+    # (The first close_participant() above already flushed one tiny segment
+    # from the single pre-close LOUD_FRAME — expected, same as
+    # test_close_participant_flushes_a_still_open_segment — so compare
+    # against the count just before this reconnect activity rather than 0.)
+    segments_before_reconnect_activity = len(registry.segments_for("room-7"))
+    for _ in range(20):  # past HANGOVER_FRAMES
+        bot.handle_audio_frame("participant-g", SILENT_FRAME)
+    bot.close_participant("participant-g")
+
+    segments = registry.segments_for("room-7")
+    assert len(segments) > segments_before_reconnect_activity
+    assert segments[-1].participant_id == "participant-g"
